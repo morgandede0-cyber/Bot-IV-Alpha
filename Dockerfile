@@ -7,4 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "Bot-IV-Alpha/bot.py"]
+CMD ["python", "bot.py"]
