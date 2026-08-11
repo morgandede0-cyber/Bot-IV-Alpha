@@ -9,6 +9,7 @@ import discord
 from discord import app_commands, ui
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from discord.ext import commands
+from aiohttp import web
 
 # ==========================================
 # 1. CONFIGURATION INITIALE & CONSTANTES
@@ -955,7 +956,7 @@ class DuelDiceView(ui.View):
                 update_wallet(self.opponent.id, self.bet)
                 update_wallet(self.challenger.id, -self.bet)
                 update_game_stats(self.opponent.id, won=True)
-                update_game_stats(self.challenger.id, won=False)
+                update_game_stats(self.opponent.id, won=False)
                 await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.opponent.mention} ({o_score} vs {c_score}) !** Il remporte **{format_currency(self.bet)}**."
 
@@ -3719,7 +3720,7 @@ EPISODE_STORIES = {
         "« Mon ballon ! »\n\n"
         "Une petite voix brisa le silence. Un ballon venait de rouler sous l’arche. Sans réfléchir, le Voyageur courut le récupérer. "
         "Il le ramassa, puis fit un pas pour revenir.\n\n"
-        "Le vent s’arrêta. Plus un bruit. Il leva lentement les yeux. Le parc avait disparu.\n"
+        "Le vent s’arrêta. Plus un bruit. Il leva lentement les yeux. Le parc had disparu.\n"
         "À sa place… Une vaste route pavée traversait une immense plaine. Des caravanes avançaient lentement. Des marchands discutaient.\n"
         "Le Voyageur resta figé.\n\n"
         "Parmi les voyageurs, certains ne ressemblaient à aucun être qu’il avait déjà vu. Leurs traits rappelaient ceux de grands félins, "
@@ -3863,8 +3864,6 @@ def get_episode_title(ep_num: int) -> str:
 
 
 
-
-@bot.event
 
 # --- SYSTÈME DE GUILLAUME LE TROUBADOUR (INTERFAÇAGE PAGINÉ) ---
 class TroubadourPaginationView(ui.View):
@@ -4055,7 +4054,7 @@ class EpisodeShopView(ui.View):
     def load_items(self):
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT item_key, name, price FROM shop_items WHERE shop_type = 'episode' AND episode_id = ?", (self.episode_num,))
+        cursor.execute("SELECT item_key, name, price FROM shop_items WHERE shop_type = 'episode' AND episode = ?", (self.episode_num,))
         items = cursor.fetchall()
 
         all_bought = True
@@ -4569,8 +4568,19 @@ async def shop_on_ready():
     print("Prêt !")
 
 # ==========================================
-# 10. LANCEMENT DU BOT
+# 10. LANCEMENT DU BOT & SERVEUR WEB RAILWAY
 # ==========================================
+
+async def handle(request):
+    return web.Response(text="Bot actif !")
+
+async def web_server():
+    app = web.Application()
+    app.add_routes([web.get('/', handle)])
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', int(os.getenv("PORT", 8080)))
+    await site.start()
 
 @bot.event
 async def on_ready():
@@ -4589,4 +4599,6 @@ async def on_ready():
 
 
 if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.create_task(web_server())
     bot.run(TOKEN)
