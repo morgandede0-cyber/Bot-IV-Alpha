@@ -1041,7 +1041,7 @@ class DuelDiceView(ui.View):
                 update_wallet(self.opponent.id, self.bet)
                 update_wallet(self.challenger.id, -self.bet)
                 update_game_stats(self.opponent.id, won=True)
-                update_game_stats(self.challenger.id, won=False)
+                update_game_stats(self.opponent.id, won=False)
                 await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.opponent.mention} ({o_score} vs {c_score}) !** Il remporte **{format_currency(self.bet)}**."
 
@@ -2706,7 +2706,7 @@ async def pay(interaction: discord.Interaction, receiver: discord.Member, amount
     await interaction.followup.send(f"💸 {interaction.user.mention} ➔ **{format_currency(amount)}** à {receiver.mention} !")
 
 
-@bot.tree.command(name="setup", description="[ADMIN] Configure les salons pour la Banque, Jim, John, Brook, Bob ou les Succès")
+@bot.tree.command(name="setup", description="[ADMIN] Configure les salons pour la Banque, Jim, John, Brook, Bob, Marchand, Troubadour ou les Succès")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.choices(ai_type=[
     app_commands.Choice(name="Tous les PNJ dans un salon unique (Carrefour PNJ)", value="all"),
@@ -2715,6 +2715,8 @@ async def pay(interaction: discord.Interaction, receiver: discord.Member, amount
     app_commands.Choice(name="crime (John)", value="crime"),
     app_commands.Choice(name="bookmaker (Brook)", value="brook"),
     app_commands.Choice(name="arene (Bob le maître d'arme)", value="arene"),
+    app_commands.Choice(name="marchand (Tom)", value="marchand"),
+    app_commands.Choice(name="troubadour (Guillaume)", value="troubadour"),
     app_commands.Choice(name="achievements (Salon des succès débloqués)", value="achievements")
 ])
 async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.TextChannel):
@@ -2724,6 +2726,7 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
     if ai_type == "all":
         await interaction.followup.send(f"✅ Le Carrefour des PNJ a bien été déployé dans {salon.mention} !", ephemeral=True)
 
+        # 1. Jim
         if os.path.exists("assets/jim.png"):
             file_jim = discord.File("assets/jim.png", filename="jim.png")
             embed_jim = discord.Embed(
@@ -2745,6 +2748,7 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
             )
             await salon.send(embed=embed_jim, view=JimTavernView())
 
+        # 2. John
         if os.path.exists("assets/john.png"):
             file_john = discord.File("assets/john.png", filename="john.png")
             embed_john = discord.Embed(
@@ -2766,6 +2770,7 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
             )
             await salon.send(embed=embed_john, view=JohnCrimeView())
 
+        # 3. Bob
         if os.path.exists("assets/bob.png"):
             file_bob = discord.File("assets/bob.png", filename="bob.png")
             embed_bob = discord.Embed(
@@ -2787,6 +2792,7 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
             )
             await salon.send(embed=embed_bob, view=BobArenaView())
 
+        # 4. Brook
         odds = generate_brook_odds()
         if os.path.exists("assets/brook.png"):
             file_brook = discord.File("assets/brook.png", filename="brook.png")
@@ -2810,6 +2816,30 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
                 color=0x1ABC9C
             )
             await salon.send(embed=embed_brook, view=BrookBookmakerView(odds))
+
+        # 5. Marchand (Tom)
+        embed_marchand = discord.Embed(
+            title="✨ Bienvenue au Salon du Shop !",
+            description=(
+                "🦊 **Tom le Marchand** est installé ici en permanence.\n\n"
+                "👉 **Clique sur le bouton ci-dessous** pour engager la discussion avec lui !"
+            ),
+            color=discord.Color.gold()
+        )
+        embed_marchand.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
+        await salon.send(embed=embed_marchand, view=PersistentMerchantView())
+
+        # 6. Troubadour (Guillaume)
+        embed_troubadour = discord.Embed(
+            title="🪕 Guillaume le Troubadour",
+            description=(
+                "✨ **Guillaume** est arrivé pour conter les épopées de vos voyages.\n\n"
+                "👉 **Clique sur le bouton ci-dessous** pour lui parler et lui donner vos reliques d'épisodes !"
+            ),
+            color=discord.Color.purple()
+        )
+        embed_troubadour.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
+        await salon.send(embed=embed_troubadour, view=PersistentTroubadourView())
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -2922,6 +2952,32 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
         else:
             await salon.send(embed=embed, view=BobArenaView())
         await interaction.followup.send(f"✅ Bob le maître d'arme a dressé son arène dans {salon.mention} avec panache !", ephemeral=True)
+
+    elif ai_type == "marchand":
+        embed = discord.Embed(
+            title="✨ Bienvenue au Salon du Shop !",
+            description=(
+                "🦊 **Tom le Marchand** est installé ici en permanence.\n\n"
+                "👉 **Clique sur le bouton ci-dessous** pour engager la discussion avec lui !"
+            ),
+            color=discord.Color.gold()
+        )
+        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
+        await salon.send(embed=embed, view=PersistentMerchantView())
+        await interaction.followup.send(f"✅ Tom le Marchand a été installé dans {salon.mention} avec succès !", ephemeral=True)
+
+    elif ai_type == "troubadour":
+        embed = discord.Embed(
+            title="🪕 Guillaume le Troubadour",
+            description=(
+                "✨ **Guillaume** est arrivé pour conter les épopées de vos voyages.\n\n"
+                "👉 **Clique sur le bouton ci-dessous** pour lui parler et lui donner vos reliques d'épisodes !"
+            ),
+            color=discord.Color.purple()
+        )
+        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
+        await salon.send(embed=embed, view=PersistentTroubadourView())
+        await interaction.followup.send(f"✅ Guillaume le Troubadour a été installé dans {salon.mention} avec succès !", ephemeral=True)
 
 
 @bot.tree.command(name="add-money", description="[ADMIN] Ajouter de l'argent")
@@ -3800,7 +3856,7 @@ EPISODE_STORIES = {
         "« Mon ballon ! »\n\n"
         "Une petite voix brisa le silence. Un ballon venait de rouler sous l'arche. Sans réfléchir, le Voyageur courut le récupérer. "
         "Il le ramassa, puis fit un pas pour revenir.\n\n"
-        "Le vent s'arrêta. Plus un bruit. Il leva lentement les yeux. Le parc avait disparu.\n"
+        "Le vent s'arrêta. Plus un bruit. Il leva lentement les yeux. Le parc had disparu.\n"
         "À sa place… Une vaste route pavée traversait une immense plaine. Des caravanes avançaient lentement. Des marchands discutaient.\n"
         "Le Voyageur resta figé.\n\n"
         "Parmi les voyageurs, certains ne ressemblaient à aucun être qu'il avait déjà vu. Leurs traits rappelaient ceux de grands félins, "
@@ -3816,7 +3872,7 @@ EPISODE_STORIES = {
         "— Si tu veux vivre… ne reste pas ici ! »"
     ),
     2: (
-        "« Le Voyageur suivit le vieil homme à través les rues pavées.\n\n"
+        "« Le Voyageur suivit le vieil homme à travers les rues pavées.\n\n"
         "Tout lui semblait étrange. Son regard ne cessait de parcourir la cité.\n"
         "Des marchands installaient leurs étals. Des soldats patrouillaient le long des remparts.\n"
         "Parmi les habitants, certains avaient des traits félins. Ils échangeaient, travaillaient et riaient aux côtés des humains, comme si cela avait toujours été ainsi.\n"
@@ -3837,7 +3893,7 @@ EPISODE_STORIES = {
     13: "« Le fracas des armes résonna dans la vallée. Le premier affrontement direct scella le destin des forces en présence. »",
     14: "« Il était déjà trop tard pour négocier. Les erreurs de stratégie se payaient au prix fort dans ces contrées impitoyables. »",
     15: "« Le temps jouait contre le Voyageur. Chaque seconde gaspillée rapprochait l'ennemi des portes de la cité. »",
-    16: "« Un piège soigneusement tendu faillit anoncer la fin de l'expédition. La prudence devint la seule alliée des survivants. »",
+    16: "« Un piège soigneusement tendu faillit annoncer la fin de l'expédition. La prudence devint la seule alliée des survivants. »",
     17: "« L'ombre mystérieuse de Seraph se profilait à l'horizon, apportant avec elle des réponses, mais aussi de nouveaux périls. »",
     18: "« L'expédition s'enfonça dans les zones inexplorées à la recherche de reliques perdues et de technologies d'un autre âge. »",
     19: "« Un vieux vétéran des guerres passées partagea son expérience et ses cicatrices avec le Voyageur, offrant de précieux conseils tactiques. »",
@@ -3845,7 +3901,7 @@ EPISODE_STORIES = {
     21: "« La guerre des temples éclata, dressant les factions les unes contre les autres pour le contrôle de ces sanctuaires sacrés. »",
     22: "« Le silence de l'après-bataille laissa place au bilan des pertes et à la réorganisation des forces en vue des prochaines échéances. »",
     23: "« Une réputation naissante précédait désormais le Voyageur à travers tout le royaume, ouvrant de nouvelles portes diplomatiques. »",
-    24: "« Le prix de la progression foi élevé, exigeant des sacrifices constants et une gestion rigoureuse des richesses accumulées. »",
+    24: "« Le prix de la progression fut élevé, exigeant des sacrifices constants et une gestion rigoureuse des richesses accumulées. »",
     25: "« L'épreuve ultime : Le Siège final. Tout ce qui avait été bâti se retrouva jeté dans la balance pour l'assaut décisif. »"
 }
 
@@ -4355,44 +4411,8 @@ class PersistentMerchantView(ui.View):
 
 
 # ==========================================
-# 8. COMMANDES ADMIN CORRIGÉES
+# 8. COMMANDES ADMIN DE GESTION D'HISTOIRE / BOUTIQUE
 # ==========================================
-
-@bot.tree.command(name="setup-marchand", description="[Admin] Installe le PNJ permanent dans le salon actuel")
-@app_commands.checks.has_permissions(administrator=True)
-async def setup_marchand(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    embed = discord.Embed(
-        title="✨ Bienvenue au Salon du Shop !",
-        description=(
-            "🦊 **Tom le Marchand** est installé ici en permanence.\n\n"
-            "👉 **Clique sur le bouton ci-dessous** pour engager la discussion avec lui !"
-        ),
-        color=discord.Color.gold()
-    )
-    embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
-    view = PersistentMerchantView()
-    await interaction.channel.send(embed=embed, view=view)
-    await interaction.followup.send("✅ Le PNJ marchand a été installé avec succès dans ce salon !", ephemeral=True)
-
-
-@bot.tree.command(name="setup-troubadour", description="[Admin] Installe Guillaume le Troubadour permanent dans le salon actuel")
-@app_commands.checks.has_permissions(administrator=True)
-async def setup_troubadour(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    embed = discord.Embed(
-        title="🪕 Guillaume le Troubadour",
-        description=(
-            "✨ **Guillaume** est arrivé pour conter les épopées de vos voyages.\n\n"
-            "👉 **Clique sur le bouton ci-dessous** pour lui parler et lui donner vos reliques d'épisodes !"
-        ),
-        color=discord.Color.purple()
-    )
-    embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
-    view = PersistentTroubadourView()
-    await interaction.channel.send(embed=embed, view=view)
-    await interaction.followup.send("✅ Guillaume le Troubadour a été installé avec succès dans ce salon !", ephemeral=True)
-
 
 @bot.tree.command(name="reset-story", description="[Admin] Réinitialise la progression des histoires et supprime les reliques des inventaires")
 @app_commands.checks.has_permissions(administrator=True)
