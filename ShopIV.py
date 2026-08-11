@@ -4,13 +4,8 @@ from discord import ui
 from discord.ext import commands
 import sqlite3
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-intents.presences = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
-
+# On récupère l'instance unique du bot depuis bot.py
+from bot import bot
 # Connexion à la base de données locale SQLite (simple et sans Turso)
 DB_PATH = "/data/economy.db"
 
@@ -901,4 +896,5 @@ async def shop_remove_error(interaction: discord.Interaction, error):
         else:
             await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
 
-TOKEN = os.getenv("SHOP_TOKEN")
+TOKEN = os.getenv("DISCORD_TOKEN")
+bot.run(TOKEN)
