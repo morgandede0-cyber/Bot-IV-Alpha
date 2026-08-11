@@ -3771,8 +3771,6 @@ async def poker_solitaire(interaction: discord.Interaction):
     await interaction.response.send_modal(BetModal("⚜️ Poker Solitaire - Mise", run_poker_game))
 
 
-
-
 # =============================================================
 # FUSION DE ShopIV(1).py — SYSTÈME BOUTIQUE & GUILLAUME LE TROUBADOUR
 # =============================================================
@@ -3782,7 +3780,7 @@ async def poker_solitaire(interaction: discord.Interaction):
 
 # --- Dictionnaire des titres d'épisodes (1 à 25) ---
 EPISODE_TITLES = {
-    1: "Épisode 1 — L’Arche",
+    1: "Épisode 1 — L'Arche",
     2: "Épisode 2 — Les Terres Tempérées",
     3: "Épisode 3 — Les Premières Villes",
     4: "Épisode 4 — Le Registre des Dirigeants",
@@ -3799,11 +3797,11 @@ EPISODE_TITLES = {
     15: "Épisode 15 — Le Temps Joue Contre Toi",
     16: "Épisode 16 — Le Piège",
     17: "Épisode 17 — Seraph",
-    18: "Épisode 18 — L’Expédition",
+    18: "Épisode 18 — L'Expédition",
     19: "Épisode 19 — Le Vétéran",
     20: "Épisode 20 — Les Temples",
     21: "Épisode 21 — La Guerre des Temples",
-    22: "Épisode 22 — L’Après-Bataille",
+    22: "Épisode 22 — L'Après-Bataille",
     23: "Épisode 23 — Une Réputation naissante",
     24: "Épisode 24 — Le Prix de la Progression",
     25: "Épisode 25 — Le Siège"
@@ -3817,21 +3815,21 @@ EPISODE_STORIES = {
         "Au centre se dressait une immense arche de pierre.\n"
         "Les enfants jouaient autour.\n"
         "Les adultes passaient devant sans même la regarder.\n"
-        "Pour eux… Ce n’était qu’une vieille ruine.\n\n"
+        "Pour eux… Ce n'était qu'une vieille ruine.\n\n"
         "« Mon ballon ! »\n\n"
-        "Une petite voix brisa le silence. Un ballon venait de rouler sous l’arche. Sans réfléchir, le Voyageur courut le récupérer. "
+        "Une petite voix brisa le silence. Un ballon venait de rouler sous l'arche. Sans réfléchir, le Voyageur courut le récupérer. "
         "Il le ramassa, puis fit un pas pour revenir.\n\n"
-        "Le vent s’arrêta. Plus un bruit. Il leva lentement les yeux. Le parc avait disparu.\n"
+        "Le vent s'arrêta. Plus un bruit. Il leva lentement les yeux. Le parc avait disparu.\n"
         "À sa place… Une vaste route pavée traversait une immense plaine. Des caravanes avançaient lentement. Des marchands discutaient.\n"
         "Le Voyageur resta figé.\n\n"
-        "Parmi les voyageurs, certains ne ressemblaient à aucun être qu’il avait déjà vu. Leurs traits rappelaient ceux de grands félins, "
-        "pourtant personne ne semblait leur accorder le moindre regard. Pendant un instant, il se demanda s’il était en train de rêver.\n\n"
-        "Des gardes escortaient les convois. Au loin, une immense cité dominait l’horizon. Tout autour, de nombreuses villes s’étendaient à perte de vue. "
-        "Presque toutes arboraient une bannière flottant au-dessus de leurs remparts. Certaines laissaient s’élever d’épaisses colonnes de fumée, "
-        "signe qu’une bataille venait d’éclater.\n\n"
+        "Parmi les voyageurs, certains ne ressemblaient à aucun être qu'il avait déjà vu. Leurs traits rappelaient ceux de grands félins, "
+        "pourtant personne ne semblait leur accorder le moindre regard. Pendant un instant, il se demanda s'il était en train de rêver.\n\n"
+        "Des gardes escortaient les convois. Au loin, une immense cité dominait l'horizon. Tout autour, de nombreuses villes s'étendaient à perte de vue. "
+        "Presque toutes arboraient une bannière flottant au-dessus de leurs remparts. Certaines laissaient s'élever d'épaisses colonnes de fumée, "
+        "signe qu'une bataille venait d'éclater.\n\n"
         "Un marchand le regarda de la tête aux pieds :\n"
-        "— Ces vêtements… Tu viens d’une Arche, n’est-ce pas ?\n\n"
-        "Le Voyageur n’eut pas le temps de répondre. Une corne de guerre retentit. Tous les regards se tournèrent vers l’horizon.\n"
+        "— Ces vêtements… Tu viens d'une Arche, n'est-ce pas ?\n\n"
+        "Le Voyageur n'eut pas le temps de répondre. Une corne de guerre retentit. Tous les regards se tournèrent vers l'horizon.\n"
         "Au loin… Une immense armée avançait vers la cité. Les portes commencèrent à se refermer.\n\n"
         "Le marchand attrapa brusquement le bras du Voyageur :\n"
         "— Si tu veux vivre… ne reste pas ici ! »"
@@ -3842,7 +3840,7 @@ EPISODE_STORIES = {
         "Des marchands installaient leurs étals. Des soldats patrouillaient le long des remparts.\n"
         "Parmi les habitants, certains avaient des traits félins. Ils échangeaient, travaillaient et riaient aux côtés des humains, comme si cela avait toujours été ainsi.\n"
         "Le Voyageur détourna un instant le regard, puis observa de nouveau. Il comprenait peu à peu que ce monde possédait ses propres règles.\n\n"
-        "Le vieil homme s'arrêta devant un immense bâtiment de pierre portant l’emblème d’une Arche.\n"
+        "Le vieil homme s'arrêta devant un immense bâtiment de pierre portant l'emblème d'une Arche.\n"
         "— Bienvenue dans les Terres Tempérées. C'est ici que commence le véritable chemin des dirigeants. »"
     ),
     3: "« Les frontières des Terres Tempérées s'étendaient. De nouvelles cités sortaient de terre, et avec elles, la nécessité de marquer son territoire et d'établir de premières alliances durables. »",
@@ -3872,7 +3870,6 @@ EPISODE_STORIES = {
 
 def get_episode_title(ep_num: int) -> str:
     return EPISODE_TITLES.get(ep_num, f"Épisode {ep_num}")
-
 
 
 # --- SYSTÈME DE GUILLAUME LE TROUBADOUR (INTERFAÇAGE PAGINÉ) ---
@@ -4375,15 +4372,10 @@ class PersistentMerchantView(ui.View):
         view = ShopDialogueView(interaction.user)
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-@bot.tree.command(name="balance", description="Vérifie ton solde ou celui d'un autre utilisateur")
-async def balance(interaction: discord.Interaction, member: discord.Member = None):
-    target = member or interaction.user
-    wallet, bank = get_user(target.id)[:2]
-    embed = discord.Embed(title=f"Portefeuille de {target.display_name}", color=discord.Color.blurple())
-    embed.add_field(name="Portefeuille", value=format_currency(wallet), inline=True)
-    embed.add_field(name="Banque", value=format_currency(bank), inline=True)
-    embed.set_thumbnail(url=target.display_avatar.url)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ==========================================
+# 8. COMMANDES ADMIN CORRIGÉES (AVEC TIRETS)
+# ==========================================
 
 @bot.tree.command(name="setup-marchand", description="[Admin] Installe le PNJ permanent dans le salon actuel")
 @app_commands.checks.has_permissions(administrator=True)
@@ -4402,18 +4394,6 @@ async def setup_marchand(interaction: discord.Interaction):
     await interaction.channel.send(embed=embed, view=view)
     await interaction.followup.send("✅ Le PNJ marchand a été installé avec succès dans ce salon !", ephemeral=True)
 
-@setup_marchand.error
-async def setup_marchand_error(interaction: discord.Interaction, error):
-    if isinstance(error, discord.app_commands.MissingPermissions):
-        if not interaction.response.is_done():
-            await interaction.response.send_message("❌ Permission refusée.", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Permission refusée.", ephemeral=True)
-    else:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(f"❌ Erreur : {error}", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
 
 @bot.tree.command(name="setup-troubadour", description="[Admin] Installe Guillaume le Troubadour permanent dans le salon actuel")
 @app_commands.checks.has_permissions(administrator=True)
@@ -4432,18 +4412,6 @@ async def setup_troubadour(interaction: discord.Interaction):
     await interaction.channel.send(embed=embed, view=view)
     await interaction.followup.send("✅ Guillaume le Troubadour a été installé avec succès dans ce salon !", ephemeral=True)
 
-@setup_troubadour.error
-async def setup_troubadour_error(interaction: discord.Interaction, error):
-    if isinstance(error, discord.app_commands.MissingPermissions):
-        if not interaction.response.is_done():
-            await interaction.response.send_message("❌ Permission refusée.", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Permission refusée.", ephemeral=True)
-    else:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(f"❌ Erreur : {error}", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
 
 @bot.tree.command(name="reset-story", description="[Admin] Réinitialise la progression des histoires et supprime les reliques des inventaires")
 @app_commands.checks.has_permissions(administrator=True)
@@ -4458,18 +4426,6 @@ async def reset_story(interaction: discord.Interaction):
 
     await interaction.followup.send("🔄 **Réinitialisation réussie !** Toutes les histoires validées et les reliques d'épisodes ont été remises à zéro pour les tests.", ephemeral=True)
 
-@reset_story.error
-async def reset_story_error(interaction: discord.Interaction, error):
-    if isinstance(error, discord.app_commands.MissingPermissions):
-        if not interaction.response.is_done():
-            await interaction.response.send_message("❌ Permission refusée.", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Permission refusée.", ephemeral=True)
-    else:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(f"❌ Erreur : {error}", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
 
 @bot.tree.command(name="inventory", description="Affiche ton inventaire d'achats")
 async def inventory(interaction: discord.Interaction):
@@ -4487,6 +4443,7 @@ async def inventory(interaction: discord.Interaction):
         description = [f"• **{item_name}** x`{qty}`" for item_name, qty in rows]
         embed.description = "\n".join(description)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 @bot.tree.command(name="shop_add", description="[Admin] Ajoute un article normal, spécial ou épisode")
 @app_commands.checks.has_permissions(administrator=True)
@@ -4520,18 +4477,6 @@ async def shop_add(
     ep_txt = f" (Épisode {episode})" if shop_type == "episode" else ""
     await interaction.followup.send(f"✅ L'article **{name}** a été ajouté au shop **{shop_type}**{ep_txt} avec succès !", ephemeral=True)
 
-@shop_add.error
-async def shop_add_error(interaction: discord.Interaction, error):
-    if isinstance(error, discord.app_commands.MissingPermissions):
-        if not interaction.response.is_done():
-            await interaction.response.send_message("❌ Permission refusée.", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Permission refusée.", ephemeral=True)
-    else:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(f"❌ Erreur : {error}", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
 
 @bot.tree.command(name="shop_remove", description="[Admin] Supprime un article de la boutique")
 @app_commands.checks.has_permissions(administrator=True)
@@ -4548,19 +4493,6 @@ async def shop_remove(interaction: discord.Interaction, item_key: str):
         await interaction.followup.send(f"✅ Article `{item_key}` supprimé.", ephemeral=True)
     else:
         await interaction.followup.send(f"❌ Aucun article trouvé avec la clé `{item_key}`.", ephemeral=True)
-
-@shop_remove.error
-async def shop_remove_error(interaction: discord.Interaction, error):
-    if isinstance(error, discord.app_commands.MissingPermissions):
-        if not interaction.response.is_done():
-            await interaction.response.send_message("❌ Permission refusée.", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Permission refusée.", ephemeral=True)
-    else:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(f"❌ Erreur : {error}", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
 
 
 # ==========================================
