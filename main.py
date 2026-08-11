@@ -31,5 +31,7 @@ async def on_ready():
         print(f"❌ Erreur lors de la synchronisation des commandes : {e}")
 
 if __name__ == "__main__":
-    TOKEN = os.getenv("DISCORD_TOKEN")
+    TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TAVERNE_TOKEN") or os.getenv("SHOP_TOKEN")
+    if not TOKEN:
+        raise ValueError("❌ Aucun token trouvé ! Vérifie tes variables d'environnement sur Railway.")
     bot.run(TOKEN)
