@@ -20,7 +20,7 @@ from discord.ext import commands
 # de configuration sur Railway/Render/etc. Le token doit rester dans les
 # variables d'environnement et ne doit JAMAIS être écrit directement dans le code.
 TOKEN = (
-    os.getenv("DISCORD_TOKEN")
+    os.getenv("TAVERNE_TOKEN")
     or os.getenv("DISCORD_BOT_TOKEN")
     or os.getenv("BOT_TOKEN")
     or os.getenv("TOKEN")
