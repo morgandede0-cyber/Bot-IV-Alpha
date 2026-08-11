@@ -131,14 +131,6 @@ def init_db():
         """)
 
         # --- TABLE POUR L'HISTOIRE (Guillaume le Troubadour) ---
-        # ======================================================
-        # MIGRATION COMPATIBLE DU SYSTEME GUILLAUME / HISTOIRE
-        # ======================================================
-        # ShopIV.py utilisait historiquement la colonne `episode`,
-        # tandis que bot.py utilise `episode_id` + `unlocked_at`.
-        # Une simple CREATE TABLE IF NOT EXISTS ne modifie PAS une
-        # ancienne table : c'est la raison principale pour laquelle
-        # Guillaume pouvait casser après la fusion.
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='story_progress'")
         story_table_exists = cursor.fetchone() is not None
 
@@ -155,12 +147,10 @@ def init_db():
             cursor.execute("PRAGMA table_info(story_progress)")
             story_columns = [column[1] for column in cursor.fetchall()]
 
-            # Ancienne version ShopIV : user_id + episode
             if "episode_id" not in story_columns and "episode" in story_columns:
                 cursor.execute("ALTER TABLE story_progress ADD COLUMN episode_id INTEGER")
                 cursor.execute("UPDATE story_progress SET episode_id = episode WHERE episode_id IS NULL")
 
-            # Ancienne version possible sans date de déblocage.
             if "unlocked_at" not in story_columns:
                 cursor.execute("ALTER TABLE story_progress ADD COLUMN unlocked_at TEXT")
                 cursor.execute(
@@ -168,14 +158,11 @@ def init_db():
                     (time.strftime("%Y-%m-%d %H:%M:%S"),)
                 )
 
-            # Sécurité : si la base contient encore des lignes issues de
-            # l'ancien champ `episode`, on garde les deux en synchronisation.
             cursor.execute("PRAGMA table_info(story_progress)")
             story_columns = [column[1] for column in cursor.fetchall()]
             if "episode" in story_columns and "episode_id" in story_columns:
                 cursor.execute("UPDATE story_progress SET episode_id = episode WHERE episode_id IS NULL")
 
-            # Empêche les doublons logiques après migration.
             cursor.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_story_progress_user_episode
                 ON story_progress(user_id, episode_id)
@@ -202,7 +189,6 @@ def init_db():
             )
         """)
 
-        # Compatibilité avec les anciennes bases de données du ShopIV.
         cursor.execute("PRAGMA table_info(shop_items)")
         shop_columns = [column[1] for column in cursor.fetchall()]
         for col, col_type in [
@@ -225,8 +211,6 @@ def init_db():
                 ],
             )
 
-        # Les reliques d'histoire sont créées si elles manquent, sans effacer
-        # les éventuels articles personnalisés ajoutés par l'administrateur.
         episode_items = []
         for ep in range(1, 26):
             label = f"0{ep:02d}" if ep < 10 else f"{ep}"
@@ -3774,9 +3758,6 @@ async def poker_solitaire(interaction: discord.Interaction):
 # =============================================================
 # FUSION DE ShopIV(1).py — SYSTÈME BOUTIQUE & GUILLAUME LE TROUBADOUR
 # =============================================================
-# Les fonctionnalités originales de ShopIV sont conservées ici.
-# Les fonctions communes (SQLite, get_user, format_currency, bot) utilisent
-# désormais les versions déjà présentes dans ce fichier principal.
 
 # --- Dictionnaire des titres d'épisodes (1 à 25) ---
 EPISODE_TITLES = {
@@ -4374,7 +4355,7 @@ class PersistentMerchantView(ui.View):
 
 
 # ==========================================
-# 8. COMMANDES ADMIN CORRIGÉES (AVEC TIRETS)
+# 8. COMMANDES ADMIN CORRIGÉES
 # ==========================================
 
 @bot.tree.command(name="setup-marchand", description="[Admin] Installe le PNJ permanent dans le salon actuel")
@@ -4547,10 +4528,6 @@ bot.tree.on_error = _global_app_command_error
 # INITIALISATION UNIQUE DU BOT
 # ==========================================
 
-# ==========================================
-# 10. LANCEMENT DU BOT
-# ==========================================
-
 @bot.event
 async def on_ready():
     print(f"🤖 Bot connecté en tant que {bot.user} (ID: {bot.user.id})")
@@ -4580,34 +4557,50 @@ async def on_ready():
             traceback.print_exc()
 
     # ------------------------------------------
-    # SYNCHRONISATION DES COMMANDES SLASH
+    # SYNC DES COMMANDES SLASH - ATTENTE POUR ÉVITER LES RATE LIMITS
     # ------------------------------------------
     try:
+        # Petit délai pour éviter les rate limits
+        await asyncio.sleep(2)
+        
+        # Synchronisation globale
         synced_global = await bot.tree.sync()
         print(f"🌲 {len(synced_global)} commandes slash synchronisées globalement.")
+        
+        # Synchronisation par serveur
+        for guild in bot.guilds:
+            try:
+                bot.tree.copy_global_to(guild=guild)
+                synced_guild = await bot.tree.sync(guild=guild)
+                print(
+                    f"🏰 Serveur '{guild.name}' ({guild.id}) : "
+                    f"{len(synced_guild)} commandes synchronisées."
+                )
+            except Exception as e:
+                print(
+                    f"❌ ERREUR SYNCHRO SERVEUR '{guild.name}' ({guild.id}) : "
+                    f"{type(e).__name__}: {e}"
+                )
+                traceback.print_exc()
     except Exception as e:
-        print(f"❌ ERREUR SYNCHRONISATION GLOBALE : {type(e).__name__}: {e}")
+        print(f"❌ ERREUR SYNCHRONISATION : {type(e).__name__}: {e}")
         traceback.print_exc()
 
-    # Les commandes de guilde sont disponibles immédiatement.
-    # Cela évite d'attendre la propagation Discord des commandes globales.
-    for guild in bot.guilds:
-        try:
-            bot.tree.copy_global_to(guild=guild)
-            synced_guild = await bot.tree.sync(guild=guild)
-            print(
-                f"🏰 Serveur '{guild.name}' ({guild.id}) : "
-                f"{len(synced_guild)} commandes synchronisées."
-            )
-        except Exception as e:
-            print(
-                f"❌ ERREUR SYNCHRO SERVEUR '{guild.name}' ({guild.id}) : "
-                f"{type(e).__name__}: {e}"
-            )
-            traceback.print_exc()
+    # ------------------------------------------
+    # LISTE DES COMMANDES DISPONIBLES
+    # ------------------------------------------
+    try:
+        commands_list = [cmd.name for cmd in bot.tree.get_commands()]
+        print(f"📋 Commandes disponibles : {', '.join(commands_list)}")
+    except Exception as e:
+        print(f"❌ ERREUR LISTE COMMANDES : {e}")
 
     print("✅ Initialisation terminée : le bot est prêt à recevoir les commandes.")
 
+
+# ==========================================
+# 10. LANCEMENT DU BOT
+# ==========================================
 
 if __name__ == "__main__":
     if not TOKEN:
