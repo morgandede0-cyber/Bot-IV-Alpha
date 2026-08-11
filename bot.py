@@ -16,7 +16,7 @@ from aiohttp import web
 # ==========================================
 
 # Récupération sécurisée du token via la variable d'environnement
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = os.getenv("TAVERNE_TOKEN")
 MAX_BET = 500  # Mise maximale autorisée pour les jeux
 
 intents = discord.Intents.default()
