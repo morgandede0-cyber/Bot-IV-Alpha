@@ -197,7 +197,7 @@ def init_db():
                 (f"EP{ep}_1", f"Relique Alpha [0{ep:02d}]" if ep < 10 else f"Relique Alpha [{ep}]", 500, "Objet d'histoire essentiel.", "episode", ep, None, None),
                 (f"EP{ep}_2", f"Relique Bêta [0{ep:02d}]" if ep < 10 else f"Relique Bêta [{ep}]", 500, "Objet d'histoire essentiel.", "episode", ep, None, None),
                 (f"EP{ep}_3", f"Relique Gamma [0{ep:02d}]" if ep < 10 else f"Relique Gamma [{ep}]", 500, "Objet d'histoire essentiel.", "episode", ep, None, None),
-                (f"EP{ep}_4", f500, "Objet d'histoire essentiel.", "episode", ep, None, None) if False else (f"EP{ep}_4", f"Relique Delta [0{ep:02d}]" if ep < 10 else f"Relique Delta [{ep}]", 500, "Objet d'histoire essentiel.", "episode", ep, None, None),
+                (f"EP{ep}_4", f"Relique Delta [0{ep:02d}]" if ep < 10 else f"Relique Delta [{ep}]", 500, "Objet d'histoire essentiel.", "episode", ep, None, None),
             ])
         cursor.executemany("INSERT INTO shop_items (item_key, name, price, description, shop_type, episode, required_role_id, role_to_give_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", episode_items)
         conn.commit()
@@ -453,36 +453,6 @@ def update_quest_progress(user_id: int, quest_key: str, amount: int = 1):
         conn.commit()
 
 
-def claim_all_daily_quests(user_id: int):
-    today = _today_str()
-    quests = get_daily_quests(user_id)
-    if not quests or any(q["claimed"] for q in quests) or not all(q["progress"] >= q["target"] for q in quests):
-        return None
-
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        base_reward, quest_streak, last_claim_date = get_quest_reward_state(user_id)
-        yesterday = (datetime.datetime.strptime(today, "%Y-%m-%d").date() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        if last_claim_date == yesterday:
-            quest_streak += 1
-        elif last_claim_date != today:
-            quest_streak = 1
-
-        multiplier = get_quest_multiplier(quest_streak)
-        total_reward = round(base_reward * multiplier)
-
-        cursor.execute("UPDATE daily_quests SET claimed = 1 WHERE user_id = ? AND quest_date = ?", (user_id, today))
-        cursor.execute("""
-            INSERT INTO quest_reward_state (user_id, base_reward, quest_date, quest_streak, last_claim_date)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET base_reward = excluded.base_reward, quest_date = excluded.quest_date, quest_streak = excluded.quest_streak, last_claim_date = excluded.last_claim_date
-        """, (user_id, base_reward, today, quest_streak, today))
-        conn.commit()
-
-    update_wallet(user_id, total_reward)
-    return {"base_reward": base_reward, "multiplier": multiplier, "quest_streak": quest_streak, "total_reward": total_reward}
-
-
 ACHIEVEMENTS_DEFS = {
     "games_master": {"title": "Maître des Jeux", "desc": "Gagner des parties dans les jeux de casino.", "thresholds": {1: 1}, "rewards": {1: 200}},
     "wealth_tycoon": {"title": "Magnat de l'Économie", "desc": "Posséder un patrimoine cumulé.", "thresholds": {1: 1000}, "rewards": {1: 250}},
@@ -613,14 +583,6 @@ def check_cooldown(user_id: int, command_name: str, duration: int) -> int:
     return 0
 
 
-def clear_cooldown(user_id: int, command_name: str = None):
-    if command_name:
-        cooldowns.pop((user_id, command_name), None)
-    else:
-        for k in [k for k in cooldowns if k[0] == user_id]:
-            cooldowns.pop(k, None)
-
-
 async def validate_game_bet(interaction: discord.Interaction, command_name: str, bet: int, cooldown_sec: int = 3600) -> bool:
     if bet <= 0 or bet > MAX_BET:
         await interaction.response.send_message(f"❌ La mise doit être entre 1 $ et {MAX_BET} $ !", ephemeral=True)
@@ -638,7 +600,137 @@ async def validate_game_bet(interaction: discord.Interaction, command_name: str,
 
 
 # ==========================================
-# 5. MODALES ET INTERFACES DE CASINO
+# 5. MINI-JEUX DE CASINO (DÉS, ROULETTE, BJ, SLOTS, PMU, ARÈNE)
+# ==========================================
+
+async def run_dice_game(interaction: discord.Interaction, bet: int):
+    if not await validate_game_bet(interaction, "dice", bet, 10):
+        return
+    user_id = interaction.user.id
+    update_wallet(user_id, -bet)
+    player_roll = random.randint(1, 6)
+    bot_roll = random.randint(1, 6)
+    
+    if player_roll > bot_roll:
+        winnings = bet * 2
+        update_wallet(user_id, winnings)
+        update_game_stats(user_id, True)
+        msg = f"🎲 Tu as fait **{player_roll}**, le bot a fait **{bot_roll}**. **Victoire !** +{format_currency(winnings)}"
+    elif player_roll < bot_roll:
+        update_game_stats(user_id, false:=False)
+        msg = f"🎲 Tu as fait **{player_roll}**, le bot a fait **{bot_roll}**. **Défaite !** -{format_currency(bet)}"
+    else:
+        update_wallet(user_id, bet)
+        msg = f"🎲 Égalité (**{player_roll}** partout). Mise remboursée !"
+    
+    await interaction.followup.send(msg, ephemeral=True)
+    await check_and_unlock_achievements(user_id, bot_client=bot)
+
+
+async def run_roulette_game(interaction: discord.Interaction, bet: int):
+    if not await validate_game_bet(interaction, "roulette", bet, 10):
+        return
+    user_id = interaction.user.id
+    update_wallet(user_id, -bet)
+    win = random.choice([True, False, False]) # Avantage maison
+    
+    if win:
+        winnings = bet * 2
+        update_wallet(user_id, winnings)
+        update_game_stats(user_id, True)
+        await interaction.followup.send(f"🎡 La roulette s'arrête sur la bonne case ! **Victoire !** +{format_currency(winnings)}", ephemeral=True)
+    else:
+        update_game_stats(user_id, False)
+        await interaction.followup.send(f"🎡 La roulette a tourné du mauvais côté. **Perdu !** -{format_currency(bet)}", ephemeral=True)
+    await check_and_unlock_achievements(user_id, bot_client=bot)
+
+
+async def run_blackjack_game(interaction: discord.Interaction, bet: int):
+    if not await validate_game_bet(interaction, "blackjack", bet, 15):
+        return
+    user_id = interaction.user.id
+    update_wallet(user_id, -bet)
+    player_score = random.randint(17, 21)
+    dealer_score = random.randint(15, 21)
+    
+    if player_score > 21 or (dealer_score >= player_score and dealer_score <= 21):
+        update_game_stats(user_id, False)
+        await interaction.followup.send(f"👑 Blackjack : Tu as {player_score}, le croupier a {dealer_score}. **Perdu !**", ephemeral=True)
+    else:
+        winnings = int(bet * 1.5)
+        update_wallet(user_id, bet + winnings)
+        update_game_stats(user_id, True)
+        await interaction.followup.send(f"👑 Blackjack : Tu as {player_score}, le croupier a {dealer_score}. **Victoire !** +{format_currency(winnings)}", ephemeral=True)
+    await check_and_unlock_achievements(user_id, bot_client=bot)
+
+
+async def run_slots_game(interaction: discord.Interaction, bet: int):
+    if not await validate_game_bet(interaction, "slots", bet, 10):
+        return
+    user_id = interaction.user.id
+    update_wallet(user_id, -bet)
+    emojis = ["🍒", "🍋", "🔔", "💎", "7️⃣"]
+    res = [random.choice(emojis) for _ in range(3)]
+    
+    if res[0] == res[1] == res[2]:
+        multiplier = 10 if res[0] == "7️⃣" else 5
+        winnings = bet * multiplier
+        update_wallet(user_id, winnings)
+        update_game_stats(user_id, True)
+        await interaction.followup.send(f"🪙 {' '.join(res)} — **JACKPOT !** +{format_currency(winnings)}", ephemeral=True)
+    elif res[0] == res[1] or res[1] == res[2] or res[0] == res[2]:
+        winnings = bet * 2
+        update_wallet(user_id, winnings)
+        update_game_stats(user_id, True)
+        await interaction.followup.send(f"🪙 {' '.join(res)} — **Petit gain !** +{format_currency(winnings)}", ephemeral=True)
+    else:
+        update_game_stats(user_id, False)
+        await interaction.followup.send(f"🪙 {' '.join(res)} — **Rien du tout !** -{format_currency(bet)}", ephemeral=True)
+    await check_and_unlock_achievements(user_id, bot_client=bot)
+
+
+async def run_pmu_game(interaction: discord.Interaction, choice: int, bet: int):
+    if not await validate_game_bet(interaction, "pmu", bet, 20):
+        return
+    user_id = interaction.user.id
+    update_wallet(user_id, -bet)
+    winner = random.randint(1, 4)
+    
+    if choice == winner:
+        winnings = bet * 3
+        update_wallet(user_id, winnings)
+        update_game_stats(user_id, True)
+        await interaction.followup.send(f"🏁 Le cheval #{winner} a gagné ! C'était ton choix. **Victoire !** +{format_currency(winnings)}", ephemeral=True)
+    else:
+        update_game_stats(user_id, False)
+        await interaction.followup.send(f"🏁 Le cheval #{winner} a gagné (tu avais choisi le #{choice}). **Perdu !**", ephemeral=True)
+    await check_and_unlock_achievements(user_id, bot_client=bot)
+
+
+async def run_brook_pmu_game(interaction: discord.Interaction, choice: int, bet: int, odds: dict):
+    await run_pmu_game(interaction, choice, bet)
+
+
+async def run_arena_fight(interaction: discord.Interaction, bet: int):
+    if not await validate_game_bet(interaction, "arena", bet, 30):
+        return
+    user_id = interaction.user.id
+    update_wallet(user_id, -bet)
+    win = random.choice([True, False])
+    
+    if win:
+        winnings = bet * 2
+        update_wallet(user_id, winnings)
+        update_game_stats(user_id, True)
+        await interaction.followup.send(f"⚔️ Tu as terrassé Bob dans l'arène ! **Victoire !** +{format_currency(winnings)}", ephemeral=True)
+    else:
+        update_game_stats(user_id, False)
+        await interaction.followup.send(f"⚔️ Bob t'a mis KO dans l'arène... **Défaite !** -{format_currency(bet)}", ephemeral=True)
+    await check_and_unlock_achievements(user_id, bot_client=bot)
+
+
+# ==========================================
+# 6. MODALES ET INTERFACES DE BANQUE & PNJ
 # ==========================================
 
 class BetModal(ui.Modal):
@@ -657,41 +749,6 @@ class BetModal(ui.Modal):
         await self.callback_game(interaction, val)
 
 
-class PMUBetModal(ui.Modal, title="🏁 PMU - Choix du cheval et mise"):
-    cheval_input = ui.TextInput(label="Numéro du cheval (1 à 4)", placeholder="Ex: 2", required=True, max_length=1)
-    bet_input = ui.TextInput(label="Montant de la mise", placeholder="Ex: 100", required=True, max_length=6)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            ch, bet = int(self.cheval_input.value), int(self.bet_input.value)
-        except ValueError:
-            return await interaction.followup.send("❌ Valeurs invalides.", ephemeral=True)
-        if ch not in [1, 2, 3, 4]:
-            return await interaction.followup.send("❌ Cheval entre 1 et 4 !", ephemeral=True)
-        await run_pmu_game(interaction, ch, bet)
-
-
-class BrookPMUBetModal(ui.Modal, title="📜 Brook - Montant de la mise"):
-    bet_input = ui.TextInput(label="Montant de la mise", placeholder="Ex: 100", required=True, max_length=6)
-
-    def __init__(self, horse_choice: int, dynamic_odds: dict):
-        super().__init__()
-        self.horse_choice, self.dynamic_odds = horse_choice, dynamic_odds
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            bet = int(self.bet_input.value)
-        except ValueError:
-            return await interaction.followup.send("❌ Montant invalide.", ephemeral=True)
-        await run_brook_pmu_game(interaction, self.horse_choice, bet, self.dynamic_odds)
-
-
-# ==========================================
-# 6. BANQUE & DAB PERSISTANT
-# ==========================================
-
 class DepositModal(ui.Modal, title="📥 DAB - Dépôt de billets"):
     amount = ui.TextInput(label="Montant à déposer", placeholder="Ex: 500", required=True)
 
@@ -701,7 +758,7 @@ class DepositModal(ui.Modal, title="📥 DAB - Dépôt de billets"):
             val = int(self.amount.value)
         except ValueError:
             return await interaction.followup.send("❌ Montant invalide.", ephemeral=True)
-        wallet, _, _, _ = get_user(interaction.user.id)
+        wallet, _, _, _ = get_user(interaction.user.id)[:4]
         if wallet < val:
             return await interaction.followup.send("❌ Portefeuille insuffisant.", ephemeral=True)
         with get_db_connection() as conn:
@@ -721,7 +778,7 @@ class WithdrawModal(ui.Modal, title="📤 DAB - Retrait de billets"):
             val = int(self.amount.value)
         except ValueError:
             return await interaction.followup.send("❌ Montant invalide.", ephemeral=True)
-        _, bank, _, _ = get_user(interaction.user.id)
+        _, bank, _, _ = get_user(interaction.user.id)[:4]
         if bank < val:
             return await interaction.followup.send("❌ Solde bancaire insuffisant.", ephemeral=True)
         with get_db_connection() as conn:
@@ -737,7 +794,7 @@ class BankView(ui.View):
     @ui.button(label="[ 💳 SOLDE ]", style=discord.ButtonStyle.primary, custom_id="persistent_bank:solde")
     async def check_balance(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
-        wallet, bank, _, _ = get_user(interaction.user.id)
+        wallet, bank, _, _ = get_user(interaction.user.id)[:4]
         embed = discord.Embed(title="💳 RELEVÉ BANCAIRE", description=f"• Portefeuille : **{format_currency(wallet)}**\n• Banque : **{format_currency(bank)}**\n• Total : **{format_currency(wallet + bank)}**", color=0x2B2D31)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -749,10 +806,6 @@ class BankView(ui.View):
     async def withdraw(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.send_modal(WithdrawModal())
 
-
-# ==========================================
-# 7. INTERFACES DES PNJ : JIM, JOHN, BROOK & BOB
-# ==========================================
 
 class TavernierGamesView(ui.View):
     def __init__(self):
@@ -782,7 +835,7 @@ class JimTavernView(ui.View):
     @ui.button(label="Commander une Pinte", style=discord.ButtonStyle.primary, emoji="🍺", custom_id="jim_pinte")
     async def pinte(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
-        wallet, _, _, _, beers_today, last_beer_date, _, _, _ = get_user(interaction.user.id)
+        wallet = get_user(interaction.user.id)[0]
         if wallet < 50:
             return await interaction.followup.send("🍺 Jim : \"Tu n'as pas assez pour une pinte !\"", ephemeral=True)
         update_wallet(interaction.user.id, -50)
@@ -825,30 +878,8 @@ class BobArenaView(ui.View):
         await interaction.response.send_modal(BetModal("⚔️ Arène - Mise de Combat", run_arena_fight))
 
 
-class BrookBookmakerView(ui.View):
-    def __init__(self, odds: dict):
-        super().__init__(timeout=None)
-        self.odds = odds
-
-    @ui.button(label="Canabis", style=discord.ButtonStyle.primary, emoji="🐎", custom_id="brook_horse_1")
-    async def h1(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BrookPMUBetModal(1, self.odds))
-
-    @ui.button(label="Jolly Jumper", style=discord.ButtonStyle.primary, emoji="🐴", custom_id="brook_horse_2")
-    async def h2(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BrookPMUBetModal(2, self.odds))
-
-    @ui.button(label="Pégase", style=discord.ButtonStyle.primary, emoji="🦄", custom_id="brook_horse_3")
-    async def h3(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BrookPMUBetModal(3, self.odds))
-
-    @ui.button(label="Petit Tonnerre", style=discord.ButtonStyle.primary, emoji="🏇", custom_id="brook_horse_4")
-    async def h4(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BrookPMUBetModal(4, self.odds))
-
-
 # ==========================================
-# 8. SYSTÈMES BOUTIQUE (TOM) ET TROUBADOUR
+# 7. BOUTIQUE & TROUBADOUR (GUILLAUME & TOM)
 # ==========================================
 
 class TroubadourPaginationView(ui.View):
@@ -911,7 +942,7 @@ class EpisodeShopView(ui.View):
 
     def make_callback(self, key, name, price):
         async def cb(interaction: discord.Interaction):
-            wallet, _, _, _ = get_user(self.member.id)
+            wallet = get_user(self.member.id)[0]
             if wallet < price:
                 return await interaction.response.send_message("❌ Solde insuffisant !", ephemeral=True)
             with get_db_connection() as conn:
@@ -935,7 +966,7 @@ class DynamicShopView(ui.View):
 
     def make_callback(self, key, name, price):
         async def cb(interaction: discord.Interaction):
-            wallet, _, _, _ = get_user(interaction.user.id)
+            wallet = get_user(interaction.user.id)[0]
             if wallet < price:
                 return await interaction.response.send_message("❌ Solde insuffisant !", ephemeral=True)
             with get_db_connection() as conn:
@@ -978,7 +1009,7 @@ class PersistentMerchantView(ui.View):
 
 
 # ==========================================
-# 9. COMMANDES DU BOT (SLASH COMMANDS)
+# 8. COMMANDES DU BOT (SLASH COMMANDS)
 # ==========================================
 
 @bot.tree.command(name="banque", description="Accéder au DAB")
@@ -989,7 +1020,7 @@ async def banque(interaction: discord.Interaction):
 @bot.tree.command(name="balance", description="Vérifie ton solde")
 async def balance(interaction: discord.Interaction, member: discord.Member = None):
     target = member or interaction.user
-    wallet, bank, _, _ = get_user(target.id)
+    wallet, bank = get_user(target.id)[:2]
     embed = discord.Embed(title=f"Portefeuille de {target.display_name}", color=discord.Color.blurple())
     embed.add_field(name="Portefeuille", value=format_currency(wallet))
     embed.add_field(name="Banque", value=format_currency(bank))
@@ -1010,7 +1041,8 @@ async def work(interaction: discord.Interaction):
 
 @bot.tree.command(name="profile", description="Affiche votre profil")
 async def profile(interaction: discord.Interaction):
-    wallet, bank, _, streak, _, _, gp, gw, gl = get_user(interaction.user.id)
+    u = get_user(interaction.user.id)
+    wallet, bank, gp, gw, gl = u[0], u[1], u[6], u[7], u[8]
     embed = discord.Embed(title=f"Profil de {interaction.user.display_name}", color=discord.Color.blurple())
     embed.add_field(name="Finances", value=f"Portefeuille : {format_currency(wallet)}\nBanque : {format_currency(bank)}", inline=False)
     embed.add_field(name="Jeux", value=f"Jouées : {gp} | Gagnées : {gw} | Perdues : {gl}", inline=False)
@@ -1020,16 +1052,20 @@ async def profile(interaction: discord.Interaction):
 @bot.tree.command(name="setup", description="[ADMIN] Configure les salons PNJ")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.TextChannel):
+    # Ajout du defer pour éviter l'expiration "L'application ne répond plus"
     await interaction.response.defer(ephemeral=True)
+    
     with get_db_connection() as conn:
         conn.cursor().execute("INSERT OR REPLACE INTO ai_channels (guild_id, ai_type, channel_id) VALUES (?, ?, ?)", (interaction.guild.id, ai_type, salon.id))
         conn.commit()
-    await salon.send(embed=discord.Embed(title=f"Salon PNJ : {ai_type}", color=discord.Color.gold()), view=JimTavernView() if ai_type=="taverne" else PersistentMerchantView())
+        
+    view = JimTavernView() if ai_type == "taverne" else PersistentMerchantView()
+    await salon.send(embed=discord.Embed(title=f"Salon PNJ : {ai_type}", color=discord.Color.gold()), view=view)
     await interaction.followup.send("✅ Salon configuré avec succès !", ephemeral=True)
 
 
 # ==========================================
-# 10. LANCEMENT FINAL DU BOT
+# 9. LANCEMENT FINAL DU BOT
 # ==========================================
 
 @bot.event
