@@ -1983,7 +1983,7 @@ class ArenaPvPView(ui.View):
                 update_wallet(self.challenger.id, self.bet)
                 update_wallet(self.opponent.id, -self.bet)
                 update_game_stats(self.challenger.id, won=True)
-                update_game_stats(self.opponent.id, won=False)
+                update_game_stats(self.challenger.id, won=False)
                 await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
                 res_text = f"\n\n🏆 **VICTOIRE de {self.challenger.mention} !** Il remporte **{format_currency(self.bet)}**."
                 color = discord.Color.green()
