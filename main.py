@@ -2,8 +2,11 @@ import os
 import discord
 from discord.ext import commands
 
-# On importe les configurations et instances des deux bots
-from bot import bot, init_db, PersistentMerchantView, PersistentTroubadourView, BankView, JimTavernView, JohnCrimeView, BobArenaView
+# On importe les configurations, instances et mini-jeux depuis bot.py
+from bot import bot, init_db, BankView, JimTavernView, JohnCrimeView, BobArenaView
+
+# On importe les vues persistantes du marchand et du troubadour depuis ShopIV.py
+from ShopIV import PersistentMerchantView, PersistentTroubadourView
 
 # Événement de démarrage global unifié
 @bot.event
