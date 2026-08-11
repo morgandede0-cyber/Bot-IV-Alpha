@@ -5,6 +5,7 @@ import os
 import random
 import time
 import sqlite3
+import traceback
 import discord
 from discord import app_commands, ui
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -19,7 +20,7 @@ from discord.ext import commands
 # de configuration sur Railway/Render/etc. Le token doit rester dans les
 # variables d'environnement et ne doit JAMAIS être écrit directement dans le code.
 TOKEN = (
-    os.getenv("TAVERNE_TOKEN")
+    os.getenv("DISCORD_TOKEN")
     or os.getenv("DISCORD_BOT_TOKEN")
     or os.getenv("BOT_TOKEN")
     or os.getenv("TOKEN")
@@ -4387,58 +4388,19 @@ async def balance(interaction: discord.Interaction, member: discord.Member = Non
 @bot.tree.command(name="setup-marchand", description="[Admin] Installe le PNJ permanent dans le salon actuel")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_marchand(interaction: discord.Interaction):
-    # On répond immédiatement à Discord pour éviter toute interaction qui reste en attente.
-    if not interaction.response.is_done():
-        await interaction.response.defer(ephemeral=True)
-
-    try:
-        if interaction.guild is None:
-            return await interaction.followup.send(
-                "❌ Cette commande doit être utilisée dans un serveur Discord.",
-                ephemeral=True,
-            )
-
-        if interaction.channel is None or not hasattr(interaction.channel, "send"):
-            return await interaction.followup.send(
-                "❌ Impossible de déterminer le salon actuel.",
-                ephemeral=True,
-            )
-
-        embed = discord.Embed(
-            title="✨ Bienvenue au Salon du Shop !",
-            description=(
-                "🦊 **Tom le Marchand** est installé ici en permanence.\n\n"
-                "👉 **Clique sur le bouton ci-dessous** pour engager la discussion avec lui !"
-            ),
-            color=discord.Color.gold()
-        )
-        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
-
-        # Vue persistante : le bouton continuera de fonctionner après un redémarrage du bot.
-        await interaction.channel.send(embed=embed, view=PersistentMerchantView())
-        await interaction.followup.send(
-            "✅ Le PNJ marchand a été installé avec succès dans ce salon !",
-            ephemeral=True,
-        )
-
-    except discord.Forbidden:
-        await interaction.followup.send(
-            "❌ Je n'ai pas les permissions nécessaires pour envoyer le PNJ dans ce salon. "
-            "Vérifie **Voir le salon**, **Envoyer des messages**, **Intégrer des liens** et "
-            "**Utiliser les composants**.",
-            ephemeral=True,
-        )
-    except discord.HTTPException as e:
-        await interaction.followup.send(
-            f"❌ Discord a refusé l'installation du marchand : `{e}`",
-            ephemeral=True,
-        )
-    except Exception as e:
-        print(f"❌ Erreur /setup-marchand : {type(e).__name__}: {e}")
-        await interaction.followup.send(
-            f"❌ Erreur lors de l'installation du marchand : `{type(e).__name__}`",
-            ephemeral=True,
-        )
+    await interaction.response.defer(ephemeral=True)
+    embed = discord.Embed(
+        title="✨ Bienvenue au Salon du Shop !",
+        description=(
+            "🦊 **Tom le Marchand** est installé ici en permanence.\n\n"
+            "👉 **Clique sur le bouton ci-dessous** pour engager la discussion avec lui !"
+        ),
+        color=discord.Color.gold()
+    )
+    embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
+    view = PersistentMerchantView()
+    await interaction.channel.send(embed=embed, view=view)
+    await interaction.followup.send("✅ Le PNJ marchand a été installé avec succès dans ce salon !", ephemeral=True)
 
 @setup_marchand.error
 async def setup_marchand_error(interaction: discord.Interaction, error):
@@ -4601,6 +4563,53 @@ async def shop_remove_error(interaction: discord.Interaction, error):
             await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
 
 
+# ==========================================
+# GESTION GLOBALE DES ERREURS DE COMMANDES SLASH
+# ==========================================
+
+async def _global_app_command_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError
+):
+    original_error = getattr(error, "original", error)
+
+    print(
+        f"❌ ERREUR COMMANDE SLASH | "
+        f"Utilisateur={getattr(interaction.user, 'id', 'inconnu')} | "
+        f"Commande={getattr(interaction.command, 'name', 'inconnue')} | "
+        f"{type(original_error).__name__}: {original_error}"
+    )
+    traceback.print_exception(
+        type(original_error),
+        original_error,
+        original_error.__traceback__,
+    )
+
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        message = "❌ Tu n'as pas les permissions nécessaires pour utiliser cette commande."
+    elif isinstance(error, app_commands.errors.CheckFailure):
+        message = "❌ Tu n'es pas autorisé à utiliser cette commande."
+    else:
+        message = (
+            f"❌ Une erreur est survenue avec cette commande : "
+            f"`{type(original_error).__name__}`"
+        )
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except Exception as send_error:
+        print(
+            f"❌ Impossible d'envoyer le message d'erreur : "
+            f"{type(send_error).__name__}: {send_error}"
+        )
+
+# CommandTree utilise ce gestionnaire pour les erreurs qui surviennent
+# pendant l'exécution des commandes slash.
+bot.tree.on_error = _global_app_command_error
+
 
 # ==========================================
 # INITIALISATION UNIQUE DU BOT
@@ -4614,20 +4623,58 @@ async def shop_remove_error(interaction: discord.Interaction, error):
 async def on_ready():
     print(f"🤖 Bot connecté en tant que {bot.user} (ID: {bot.user.id})")
 
-    # Une seule base économique est utilisée par tous les systèmes : /data/economy.db.
-    init_db()
-
-    # Vues persistantes des PNJ de la boutique et de Guillaume.
-    if not getattr(bot, "_persistent_views_registered", False):
-        bot.add_view(PersistentMerchantView())
-        bot.add_view(PersistentTroubadourView())
-        bot._persistent_views_registered = True
-
+    # ------------------------------------------
+    # BASE DE DONNÉES
+    # ------------------------------------------
     try:
-        synced = await bot.tree.sync()
-        print(f"🌲 {len(synced)} commandes slash synchronisées.")
+        init_db()
+        print("💾 Base économique /data/economy.db : OK")
     except Exception as e:
-        print(f"❌ Erreur lors de la synchronisation des commandes : {e}")
+        print(f"❌ ERREUR INIT BASE DE DONNÉES : {type(e).__name__}: {e}")
+        traceback.print_exc()
+
+    # ------------------------------------------
+    # VUES PERSISTANTES
+    # ------------------------------------------
+    if not getattr(bot, "_persistent_views_registered", False):
+        try:
+            bot.add_view(PersistentMerchantView())
+            bot.add_view(PersistentTroubadourView())
+            bot._persistent_views_registered = True
+            print("🦊 Vue persistante du Marchand : OK")
+            print("🪕 Vue persistante de Guillaume : OK")
+        except Exception as e:
+            print(f"❌ ERREUR VUES PERSISTANTES : {type(e).__name__}: {e}")
+            traceback.print_exc()
+
+    # ------------------------------------------
+    # SYNCHRONISATION DES COMMANDES SLASH
+    # ------------------------------------------
+    try:
+        synced_global = await bot.tree.sync()
+        print(f"🌲 {len(synced_global)} commandes slash synchronisées globalement.")
+    except Exception as e:
+        print(f"❌ ERREUR SYNCHRONISATION GLOBALE : {type(e).__name__}: {e}")
+        traceback.print_exc()
+
+    # Les commandes de guilde sont disponibles immédiatement.
+    # Cela évite d'attendre la propagation Discord des commandes globales.
+    for guild in bot.guilds:
+        try:
+            bot.tree.copy_global_to(guild=guild)
+            synced_guild = await bot.tree.sync(guild=guild)
+            print(
+                f"🏰 Serveur '{guild.name}' ({guild.id}) : "
+                f"{len(synced_guild)} commandes synchronisées."
+            )
+        except Exception as e:
+            print(
+                f"❌ ERREUR SYNCHRO SERVEUR '{guild.name}' ({guild.id}) : "
+                f"{type(e).__name__}: {e}"
+            )
+            traceback.print_exc()
+
+    print("✅ Initialisation terminée : le bot est prêt à recevoir les commandes.")
 
 
 if __name__ == "__main__":
