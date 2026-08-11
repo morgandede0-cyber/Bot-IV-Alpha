@@ -901,5 +901,5 @@ async def shop_remove_error(interaction: discord.Interaction, error):
         else:
             await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
 
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = os.getenv("SHOP_TOKEN")
 bot.run(TOKEN)
