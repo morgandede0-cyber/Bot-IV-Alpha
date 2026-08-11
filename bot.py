@@ -3681,7 +3681,3 @@ async def on_ready():
         print(f"🌲 {len(synced)} commandes slash synchronisées.")
     except Exception as e:
         print(f"❌ Erreur lors de la synchronisation des commandes : {e}")
-
-
-if __name__ == "__main__":
-    bot.run(TOKEN)
