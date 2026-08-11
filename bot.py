@@ -15,9 +15,9 @@ from aiohttp import web
 # 1. CONFIGURATION INITIALE & CONSTANTES
 # ==========================================
 
-# Récupération sécurisée du token via la variable d'environnement
+# Récupération sécurisée du token via la variable d'environnement[cite: 8]
 TOKEN = os.getenv("TAVERNE_TOKEN")
-MAX_BET = 500  # Mise maximale autorisée pour les jeux
+MAX_BET = 500  # Mise maximale autorisée pour les jeux[cite: 8]
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -26,10 +26,10 @@ intents.presences = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Cooldowns en mémoire : {(user_id, command_name): timestamp_expiration}
+# Cooldowns en mémoire : {(user_id, command_name): timestamp_expiration}[cite: 8]
 cooldowns = {}
 
-# Mode test global pour les cooldowns
+# Mode test global pour les cooldowns[cite: 8]
 TEST_MODE_ENABLED = False
 
 
@@ -3675,11 +3675,7 @@ async def poker_solitaire(interaction: discord.Interaction):
 # =============================================================
 # FUSION DE ShopIV(1).py — SYSTÈME BOUTIQUE & GUILLAUME LE TROUBADOUR
 # =============================================================
-# Les fonctionnalités originales de ShopIV sont conservées ici.
-# Les fonctions communes (SQLite, get_user, format_currency, bot) utilisent
-# désormais les versions déjà présentes dans ce fichier principal.
 
-# --- Dictionnaire des titres d'épisodes (1 à 25) ---
 EPISODE_TITLES = {
     1: "Épisode 1 — L’Arche",
     2: "Épisode 2 — Les Terres Tempérées",
@@ -3708,7 +3704,6 @@ EPISODE_TITLES = {
     25: "Épisode 25 — Le Siège"
 }
 
-# --- Textes des histoires racontées par Guillaume (1 à 25) ---
 EPISODE_STORIES = {
     1: (
         "« La journée touchait à sa fin.\n\n"
@@ -3773,27 +3768,11 @@ def init_shop_db():
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            wallet INTEGER DEFAULT 0,
-            bank INTEGER DEFAULT 0,
-            last_daily INTEGER DEFAULT 0,
-            streak INTEGER DEFAULT 0
-        )
-    """)
-    cursor.execute("""
         CREATE TABLE IF NOT EXISTS inventory (
             user_id INTEGER,
             item_name TEXT,
             quantity INTEGER DEFAULT 1,
             PRIMARY KEY (user_id, item_name)
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS story_progress (
-            user_id INTEGER,
-            episode_id INTEGER,
-            PRIMARY KEY (user_id, episode_id)
         )
     """)
     cursor.execute("""
@@ -3831,7 +3810,6 @@ def init_shop_db():
 
     cursor.execute("DELETE FROM shop_items WHERE shop_type = 'episode'")
     
-    # Génération automatique des items d'épisodes 1 à 25
     episode_items = []
     for ep in range(1, 26):
         episode_items.extend([
@@ -3845,17 +3823,8 @@ def init_shop_db():
     conn.close()
 
 def shop_get_user(user_id: int):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT wallet, bank, last_daily, streak FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    if not row:
-        cursor.execute("INSERT INTO users (user_id, wallet, bank) VALUES (?, 0, 0)", (user_id,))
-        conn.commit()
-        cursor.execute("SELECT wallet, bank, last_daily, streak FROM users WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-    conn.close()
-    return int(row[0]), int(row[1]), int(row[2]), int(row[3])
+    wallet, bank, last_daily, streak, _, _, _, _, _ = get_user(user_id)
+    return wallet, bank, last_daily, streak
 
 init_shop_db()
 
@@ -3863,9 +3832,6 @@ def get_episode_title(ep_num: int) -> str:
     return EPISODE_TITLES.get(ep_num, f"Épisode {ep_num}")
 
 
-
-
-# --- SYSTÈME DE GUILLAUME LE TROUBADOUR (INTERFAÇAGE PAGINÉ) ---
 class TroubadourPaginationView(ui.View):
     def __init__(self, member: discord.Member, current_ep: int = 1):
         super().__init__(timeout=120)
@@ -4043,7 +4009,7 @@ class PersistentTroubadourView(ui.View):
         view = TroubadourPaginationView(interaction.user, current_ep=1)
         await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
 
-# --- VUE POUR LA BOUTIQUE DES ÉPISODES ---
+
 class EpisodeShopView(ui.View):
     def __init__(self, member: discord.Member, episode_num: int):
         super().__init__(timeout=120)
@@ -4149,7 +4115,7 @@ class EpisodeShopView(ui.View):
         
         await interaction.response.edit_message(embed=embed, view=new_view)
 
-# --- VUE POUR LA BOUTIQUE DYNAMIQUE CLASSIQUE ---
+
 class DynamicShopView(ui.View):
     def __init__(self, member: discord.Member, shop_type: str):
         super().__init__(timeout=60)
@@ -4221,7 +4187,7 @@ class DynamicShopView(ui.View):
             await interaction.response.send_message(f"✅ Achat réussi ! Tu as acheté **{item_name}** pour {format_currency(item_price)}{feedback_extra}", ephemeral=True)
         return callback
 
-# --- MENU DE DIALOGUE PRINCIPAL DU MARCHAND ---
+
 class ShopDialogueView(ui.View):
     def __init__(self, member: discord.Member):
         super().__init__(timeout=120)
@@ -4340,6 +4306,7 @@ class ShopDialogueView(ui.View):
         await interaction.response.defer()
         await interaction.delete_original_response()
 
+
 class PersistentMerchantView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -4365,6 +4332,7 @@ class PersistentMerchantView(ui.View):
         view = ShopDialogueView(interaction.user)
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
+
 @bot.tree.command(name="balance", description="Vérifie ton solde ou celui d'un autre utilisateur")
 async def balance(interaction: discord.Interaction, member: discord.Member = None):
     target = member or interaction.user
@@ -4374,6 +4342,7 @@ async def balance(interaction: discord.Interaction, member: discord.Member = Non
     embed.add_field(name="Banque", value=format_currency(bank), inline=True)
     embed.set_thumbnail(url=target.display_avatar.url)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 @bot.tree.command(name="setup-marchand", description="[Admin] Installe le PNJ permanent dans le salon actuel")
 @commands.has_permissions(administrator=True)
@@ -4392,6 +4361,7 @@ async def setup_marchand(interaction: discord.Interaction):
     await interaction.channel.send(embed=embed, view=view)
     await interaction.followup.send("✅ Le PNJ marchand a été installé avec succès dans ce salon !", ephemeral=True)
 
+
 @setup_marchand.error
 async def setup_marchand_error(interaction: discord.Interaction, error):
     if isinstance(error, discord.app_commands.MissingPermissions):
@@ -4404,6 +4374,7 @@ async def setup_marchand_error(interaction: discord.Interaction, error):
             await interaction.response.send_message(f"❌ Erreur : {error}", ephemeral=True)
         else:
             await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
+
 
 @bot.tree.command(name="setup-troubadour", description="[Admin] Installe Guillaume le Troubadour permanent dans le salon actuel")
 @commands.has_permissions(administrator=True)
@@ -4422,6 +4393,7 @@ async def setup_troubadour(interaction: discord.Interaction):
     await interaction.channel.send(embed=embed, view=view)
     await interaction.followup.send("✅ Guillaume le Troubadour a été installé avec succès dans ce salon !", ephemeral=True)
 
+
 @setup_troubadour.error
 async def setup_troubadour_error(interaction: discord.Interaction, error):
     if isinstance(error, discord.app_commands.MissingPermissions):
@@ -4434,6 +4406,7 @@ async def setup_troubadour_error(interaction: discord.Interaction, error):
             await interaction.response.send_message(f"❌ Erreur : {error}", ephemeral=True)
         else:
             await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
+
 
 @bot.tree.command(name="reset-story", description="[Admin] Réinitialise la progression des histoires et supprime les reliques des inventaires")
 @commands.has_permissions(administrator=True)
@@ -4448,6 +4421,7 @@ async def reset_story(interaction: discord.Interaction):
 
     await interaction.followup.send("🔄 **Réinitialisation réussie !** Toutes les histoires validées et les reliques d'épisodes ont été remises à zéro pour les tests.", ephemeral=True)
 
+
 @reset_story.error
 async def reset_story_error(interaction: discord.Interaction, error):
     if isinstance(error, discord.app_commands.MissingPermissions):
@@ -4460,6 +4434,7 @@ async def reset_story_error(interaction: discord.Interaction, error):
             await interaction.response.send_message(f"❌ Erreur : {error}", ephemeral=True)
         else:
             await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
+
 
 @bot.tree.command(name="inventory", description="Affiche ton inventaire d'achats")
 async def inventory(interaction: discord.Interaction):
@@ -4477,6 +4452,7 @@ async def inventory(interaction: discord.Interaction):
         description = [f"• **{item_name}** x`{qty}`" for item_name, qty in rows]
         embed.description = "\n".join(description)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 @bot.tree.command(name="shop_add", description="[Admin] Ajoute un article normal, spécial ou épisode")
 @commands.has_permissions(administrator=True)
@@ -4510,6 +4486,7 @@ async def shop_add(
     ep_txt = f" (Épisode {episode})" if shop_type == "episode" else ""
     await interaction.followup.send(f"✅ L'article **{name}** a été ajouté au shop **{shop_type}**{ep_txt} avec succès !", ephemeral=True)
 
+
 @shop_add.error
 async def shop_add_error(interaction: discord.Interaction, error):
     if isinstance(error, discord.app_commands.MissingPermissions):
@@ -4522,6 +4499,7 @@ async def shop_add_error(interaction: discord.Interaction, error):
             await interaction.response.send_message(f"❌ Erreur : {error}", ephemeral=True)
         else:
             await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
+
 
 @bot.tree.command(name="shop_remove", description="[Admin] Supprime un article de la boutique")
 @commands.has_permissions(administrator=True)
@@ -4539,6 +4517,7 @@ async def shop_remove(interaction: discord.Interaction, item_key: str):
     else:
         await interaction.followup.send(f"❌ Aucun article trouvé avec la clé `{item_key}`.", ephemeral=True)
 
+
 @shop_remove.error
 async def shop_remove_error(interaction: discord.Interaction, error):
     if isinstance(error, discord.app_commands.MissingPermissions):
@@ -4553,19 +4532,11 @@ async def shop_remove_error(interaction: discord.Interaction, error):
             await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
 
 
-
-# --- Intégration de l'ancien on_ready de ShopIV ---
 async def shop_on_ready():
     init_shop_db()
     bot.add_view(PersistentMerchantView())
     bot.add_view(PersistentTroubadourView())
-    print(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synchronisé {len(synced)} commandes slash.")
-    except Exception as e:
-        print(e)
-    print("Prêt !")
+
 
 # ==========================================
 # 10. LANCEMENT DU BOT & SERVEUR WEB RAILWAY
@@ -4584,18 +4555,19 @@ async def web_server():
 
 @bot.event
 async def on_ready():
-    print(f"🤖 Bot connecté en tant que bot (ID: {bot.user.id})")
+    print(f"🤖 Bot connecté en tant que {bot.user} (ID: {bot.user.id})")
     try:
         synced = await bot.tree.sync()
         print(f"🌲 {len(synced)} commandes slash synchronisées.")
     except Exception as e:
         print(f"❌ Erreur lors de la synchronisation des commandes : {e}")
 
-    # Initialisation des systèmes fusionnés de ShopIV
+    # Initialisation des vues persistantes et des sous-systèmes de boutique/troubadour
     try:
         await shop_on_ready()
     except Exception as e:
         print(f"❌ Erreur lors de l'initialisation ShopIV : {e}")
+    print("Prêt !")
 
 
 if __name__ == "__main__":
