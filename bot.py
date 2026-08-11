@@ -15,7 +15,15 @@ from discord.ext import commands
 # ==========================================
 
 # Récupération sécurisée du token via la variable d'environnement
-TOKEN = os.getenv("TAVERNE_TOKEN")
+# Token Discord : plusieurs noms sont acceptés pour éviter les problèmes
+# de configuration sur Railway/Render/etc. Le token doit rester dans les
+# variables d'environnement et ne doit JAMAIS être écrit directement dans le code.
+TOKEN = (
+    os.getenv("DISCORD_TOKEN")
+    or os.getenv("DISCORD_BOT_TOKEN")
+    or os.getenv("BOT_TOKEN")
+    or os.getenv("TOKEN")
+)
 MAX_BET = 500  # Mise maximale autorisée pour les jeux
 
 intents = discord.Intents.default()
@@ -122,14 +130,55 @@ def init_db():
         """)
 
         # --- TABLE POUR L'HISTOIRE (Guillaume le Troubadour) ---
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS story_progress (
-                user_id INTEGER,
-                episode_id INTEGER,
-                unlocked_at TEXT,
-                PRIMARY KEY (user_id, episode_id)
-            )
-        """)
+        # ======================================================
+        # MIGRATION COMPATIBLE DU SYSTEME GUILLAUME / HISTOIRE
+        # ======================================================
+        # ShopIV.py utilisait historiquement la colonne `episode`,
+        # tandis que bot.py utilise `episode_id` + `unlocked_at`.
+        # Une simple CREATE TABLE IF NOT EXISTS ne modifie PAS une
+        # ancienne table : c'est la raison principale pour laquelle
+        # Guillaume pouvait casser après la fusion.
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='story_progress'")
+        story_table_exists = cursor.fetchone() is not None
+
+        if not story_table_exists:
+            cursor.execute("""
+                CREATE TABLE story_progress (
+                    user_id INTEGER,
+                    episode_id INTEGER,
+                    unlocked_at TEXT,
+                    PRIMARY KEY (user_id, episode_id)
+                )
+            """)
+        else:
+            cursor.execute("PRAGMA table_info(story_progress)")
+            story_columns = [column[1] for column in cursor.fetchall()]
+
+            # Ancienne version ShopIV : user_id + episode
+            if "episode_id" not in story_columns and "episode" in story_columns:
+                cursor.execute("ALTER TABLE story_progress ADD COLUMN episode_id INTEGER")
+                cursor.execute("UPDATE story_progress SET episode_id = episode WHERE episode_id IS NULL")
+
+            # Ancienne version possible sans date de déblocage.
+            if "unlocked_at" not in story_columns:
+                cursor.execute("ALTER TABLE story_progress ADD COLUMN unlocked_at TEXT")
+                cursor.execute(
+                    "UPDATE story_progress SET unlocked_at = ? WHERE unlocked_at IS NULL OR unlocked_at = ''",
+                    (time.strftime("%Y-%m-%d %H:%M:%S"),)
+                )
+
+            # Sécurité : si la base contient encore des lignes issues de
+            # l'ancien champ `episode`, on garde les deux en synchronisation.
+            cursor.execute("PRAGMA table_info(story_progress)")
+            story_columns = [column[1] for column in cursor.fetchall()]
+            if "episode" in story_columns and "episode_id" in story_columns:
+                cursor.execute("UPDATE story_progress SET episode_id = episode WHERE episode_id IS NULL")
+
+            # Empêche les doublons logiques après migration.
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_story_progress_user_episode
+                ON story_progress(user_id, episode_id)
+            """)
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS inventory (
@@ -4338,19 +4387,58 @@ async def balance(interaction: discord.Interaction, member: discord.Member = Non
 @bot.tree.command(name="setup-marchand", description="[Admin] Installe le PNJ permanent dans le salon actuel")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_marchand(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    embed = discord.Embed(
-        title="✨ Bienvenue au Salon du Shop !",
-        description=(
-            "🦊 **Tom le Marchand** est installé ici en permanence.\n\n"
-            "👉 **Clique sur le bouton ci-dessous** pour engager la discussion avec lui !"
-        ),
-        color=discord.Color.gold()
-    )
-    embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
-    view = PersistentMerchantView()
-    await interaction.channel.send(embed=embed, view=view)
-    await interaction.followup.send("✅ Le PNJ marchand a été installé avec succès dans ce salon !", ephemeral=True)
+    # On répond immédiatement à Discord pour éviter toute interaction qui reste en attente.
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=True)
+
+    try:
+        if interaction.guild is None:
+            return await interaction.followup.send(
+                "❌ Cette commande doit être utilisée dans un serveur Discord.",
+                ephemeral=True,
+            )
+
+        if interaction.channel is None or not hasattr(interaction.channel, "send"):
+            return await interaction.followup.send(
+                "❌ Impossible de déterminer le salon actuel.",
+                ephemeral=True,
+            )
+
+        embed = discord.Embed(
+            title="✨ Bienvenue au Salon du Shop !",
+            description=(
+                "🦊 **Tom le Marchand** est installé ici en permanence.\n\n"
+                "👉 **Clique sur le bouton ci-dessous** pour engager la discussion avec lui !"
+            ),
+            color=discord.Color.gold()
+        )
+        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
+
+        # Vue persistante : le bouton continuera de fonctionner après un redémarrage du bot.
+        await interaction.channel.send(embed=embed, view=PersistentMerchantView())
+        await interaction.followup.send(
+            "✅ Le PNJ marchand a été installé avec succès dans ce salon !",
+            ephemeral=True,
+        )
+
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "❌ Je n'ai pas les permissions nécessaires pour envoyer le PNJ dans ce salon. "
+            "Vérifie **Voir le salon**, **Envoyer des messages**, **Intégrer des liens** et "
+            "**Utiliser les composants**.",
+            ephemeral=True,
+        )
+    except discord.HTTPException as e:
+        await interaction.followup.send(
+            f"❌ Discord a refusé l'installation du marchand : `{e}`",
+            ephemeral=True,
+        )
+    except Exception as e:
+        print(f"❌ Erreur /setup-marchand : {type(e).__name__}: {e}")
+        await interaction.followup.send(
+            f"❌ Erreur lors de l'installation du marchand : `{type(e).__name__}`",
+            ephemeral=True,
+        )
 
 @setup_marchand.error
 async def setup_marchand_error(interaction: discord.Interaction, error):
@@ -4543,4 +4631,10 @@ async def on_ready():
 
 
 if __name__ == "__main__":
+    if not TOKEN:
+        raise RuntimeError(
+            "Token Discord introuvable. Ajoute une variable d'environnement "
+            "DISCORD_TOKEN (ou DISCORD_BOT_TOKEN/BOT_TOKEN/TOKEN) dans ton hébergeur. "
+            "Ne mets pas le token directement dans le code."
+        )
     bot.run(TOKEN)
