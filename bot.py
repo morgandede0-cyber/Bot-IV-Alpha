@@ -582,13 +582,13 @@ ACHIEVEMENTS_DEFS = {}
 ACHIEVEMENTS_LOADED = False
 
 # URL du fichier JSON sur GitHub (à modifier avec ton repo)
-GITHUB_RAW_URL = "https://raw.githubusercontent.com/TON_USER/TON_REPO/main/achievements_list.json"
+GITHUB_ACHIEVEMENTS_URL = "GITHUB_ACHIEVEMENTS_URL = "https://raw.githubusercontent.com/morgandede0-cyber/Bot-IV-Alpha/main/achievements_list.json""
 
 async def load_achievements_from_github():
     """Charge la liste des succès depuis le fichier JSON sur GitHub"""
     global ACHIEVEMENTS_DEFS, ACHIEVEMENTS_LOADED
     
-    # Fallback local en cas d'échec (succès de base pour que le bot fonctionne)
+    # Fallback local en cas d'échec
     FALLBACK_ACHIEVEMENTS = {
         "games_master": {
             "title": "Maître des Jeux",
@@ -612,7 +612,7 @@ async def load_achievements_from_github():
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(GITHUB_RAW_URL, timeout=15) as response:
+            async with session.get(GITHUB_ACHIEVEMENTS_URL, timeout=15) as response:
                 if response.status == 200:
                     data = await response.json()
                     if isinstance(data, dict) and data:
@@ -655,6 +655,103 @@ async def reload_achievements(interaction: discord.Interaction):
         embed = discord.Embed(
             title="⚠️ Rechargement partiel",
             description="Les succès ont été chargés depuis le fallback local (GitHub inaccessible ou fichier invalide).",
+            color=discord.Color.orange()
+        )
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# =============================================================
+# CHARGEMENT DES ÉPISODES DEPUIS GITHUB (FICHIERS TEXTE)
+# =============================================================
+
+EPISODE_TITLES = {}
+EPISODE_STORIES = {}
+EPISODES_LOADED = False
+
+# URL de base du dossier sur GitHub (à modifier avec ton repo)
+EPISODES_BASE_URL = "EPISODES_BASE_URL = "https://raw.githubusercontent.com/morgandede0-cyber/Bot-IV-Alpha/main/episodes/""
+
+# Nombre total d'épisodes disponibles
+TOTAL_EPISODES = 30
+
+async def load_episodes_from_github():
+    """Charge les épisodes depuis les fichiers texte sur GitHub"""
+    global EPISODE_TITLES, EPISODE_STORIES, EPISODES_LOADED
+    
+    titles = {}
+    stories = {}
+    loaded_count = 0
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            for ep_num in range(1, TOTAL_EPISODES + 1):
+                # Construire le nom du fichier (S1 EP1.txt, S1 EP2.txt, etc.)
+                filename = f"S1 EP{ep_num}.txt"
+                url = EPISODES_BASE_URL + filename
+                
+                try:
+                    async with session.get(url, timeout=10) as response:
+                        if response.status == 200:
+                            content = await response.text()
+                            
+                            # Séparer le titre du contenu
+                            # Format attendu : première ligne = titre, reste = histoire
+                            lines = content.split('\n')
+                            if lines:
+                                # La première ligne est le titre
+                                title = lines[0].strip()
+                                # Le reste est l'histoire
+                                story = '\n'.join(lines[1:]).strip()
+                                
+                                titles[ep_num] = title
+                                stories[ep_num] = story
+                                loaded_count += 1
+                                print(f"✅ Épisode {ep_num} chargé : {title[:30]}...")
+                        else:
+                            print(f"⚠️ Épisode {ep_num} introuvable (HTTP {response.status})")
+                except Exception as e:
+                    print(f"❌ Erreur chargement épisode {ep_num}: {e}")
+        
+        if loaded_count > 0:
+            EPISODE_TITLES = titles
+            EPISODE_STORIES = stories
+            EPISODES_LOADED = True
+            print(f"✅ {loaded_count}/{TOTAL_EPISODES} épisodes chargés depuis GitHub")
+            return True
+        else:
+            # Fallback minimal
+            EPISODE_TITLES = {1: "Épisode 1 — L'Arche"}
+            EPISODE_STORIES = {1: "« Une histoire mystérieuse... »"}
+            EPISODES_LOADED = True
+            return False
+            
+    except Exception as e:
+        print(f"❌ Erreur chargement épisodes: {e}")
+        EPISODE_TITLES = {1: "Épisode 1 — L'Arche"}
+        EPISODE_STORIES = {1: "« Une histoire mystérieuse... »"}
+        EPISODES_LOADED = True
+        return False
+
+
+# Commande admin pour recharger les épisodes
+@bot.tree.command(name="reload-episodes", description="[ADMIN] Recharge les épisodes depuis GitHub")
+@app_commands.checks.has_permissions(administrator=True)
+async def reload_episodes(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    
+    success = await load_episodes_from_github()
+    
+    if success:
+        embed = discord.Embed(
+            title="✅ Épisodes rechargés",
+            description=f"{len(EPISODE_TITLES)} épisodes chargés depuis GitHub avec succès !",
+            color=discord.Color.green()
+        )
+    else:
+        embed = discord.Embed(
+            title="⚠️ Rechargement partiel",
+            description="Certains épisodes n'ont pas pu être chargés. Vérifie les fichiers dans le dossier `episodes/`.",
             color=discord.Color.orange()
         )
     
@@ -896,6 +993,12 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
                     print(f"❌ Erreur notification succès : {e}")
 
     return unlocked_now
+
+
+def get_episode_title(ep_num: int) -> str:
+    if EPISODES_LOADED and ep_num in EPISODE_TITLES:
+        return EPISODE_TITLES.get(ep_num, f"Épisode {ep_num}")
+    return f"Épisode {ep_num}"
 
 
 # ==========================================
@@ -3919,104 +4022,24 @@ async def poker_solitaire(interaction: discord.Interaction):
 
 
 # =============================================================
-# FUSION DE ShopIV(1).py — SYSTÈME BOUTIQUE & GUILLAUME LE TROUBADOUR
+# SYSTÈME BOUTIQUE & GUILLAUME LE TROUBADOUR
 # =============================================================
 
-# --- Dictionnaire des titres d'épisodes (1 à 25) ---
-EPISODE_TITLES = {
-    1: "Épisode 1 — L'Arche",
-    2: "Épisode 2 — Les Terres Tempérées",
-    3: "Épisode 3 — Les Premières Villes",
-    4: "Épisode 4 — Le Registre des Dirigeants",
-    5: "Épisode 5 — Le Premier Départ",
-    6: "Épisode 6 — Le Grand Départ",
-    7: "Épisode 7 — La Première Capitale",
-    8: "Épisode 8 — Le Gardien des Arches",
-    9: "Épisode 9 — Le Mystère des Arches",
-    10: "Épisode 10 — Les Premières Conquêtes",
-    11: "Épisode 11 — La Course aux Territoires",
-    12: "Épisode 12 — La Première Décision",
-    13: "Épisode 13 — Le Premier Affrontement",
-    14: "Épisode 14 — Trop Tard",
-    15: "Épisode 15 — Le Temps Joue Contre Toi",
-    16: "Épisode 16 — Le Piège",
-    17: "Épisode 17 — Seraph",
-    18: "Épisode 18 — L'Expédition",
-    19: "Épisode 19 — Le Vétéran",
-    20: "Épisode 20 — Les Temples",
-    21: "Épisode 21 — La Guerre des Temples",
-    22: "Épisode 22 — L'Après-Bataille",
-    23: "Épisode 23 — Une Réputation naissante",
-    24: "Épisode 24 — Le Prix de la Progression",
-    25: "Épisode 25 — Le Siège"
-}
+class PersistentTroubadourView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
 
-# --- Textes des histoires racontées par Guillaume (1 à 25) ---
-EPISODE_STORIES = {
-    1: (
-        "« La journée touchait à sa fin.\n\n"
-        "Comme presque tous les soirs, le Voyageur traversait le vieux parc pour rentrer chez lui.\n"
-        "Au centre se dressait une immense arche de pierre.\n"
-        "Les enfants jouaient autour.\n"
-        "Les adultes passaient devant sans même la regarder.\n"
-        "Pour eux… Ce n'était qu'une vieille ruine.\n\n"
-        "« Mon ballon ! »\n\n"
-        "Une petite voix brisa le silence. Un ballon venait de rouler sous l'arche. Sans réfléchir, le Voyageur courut le récupérer. "
-        "Il le ramassa, puis fit un pas pour revenir.\n\n"
-        "Le vent s'arrêta. Plus un bruit. Il leva lentement les yeux. Le parc had disparu.\n"
-        "À sa place… Une vaste route pavée traversait une immense plaine. Des caravanes avançaient lentement. Des marchands discutaient.\n"
-        "Le Voyageur resta figé.\n\n"
-        "Parmi les voyageurs, certains ne ressemblaient à aucun être qu'il avait déjà vu. Leurs traits rappelaient ceux de grands félins, "
-        "pourtant personne ne semblait leur accorder le moindre regard. Pendant un instant, il se demanda s'il était en train de rêver.\n\n"
-        "Des gardes escortaient les convois. Au loin, une immense cité dominait l'horizon. Tout autour, de nombreuses villes s'étendaient à perte de vue. "
-        "Presque toutes arboraient une bannière flottant au-dessus de leurs remparts. Certaines laissaient s'élever d'épaisses colonnes de fumée, "
-        "signe qu'une bataille venait d'éclater.\n\n"
-        "Un marchand le regarda de la tête aux pieds :\n"
-        "— Ces vêtements… Tu viens d'une Arche, n'est-ce pas ?\n\n"
-        "Le Voyageur n'eut pas le temps de répondre. Une corne de guerre retentit. Tous les regards se tournèrent vers l'horizon.\n"
-        "Au loin… Une immense armée avançait vers la cité. Les portes commencèrent à se refermer.\n\n"
-        "Le marchand attrapa brusquement le bras du Voyageur :\n"
-        "— Si tu veux vivre… ne reste pas ici ! »"
-    ),
-    2: (
-        "« Le Voyageur suivit le vieil homme à travers les rues pavées.\n\n"
-        "Tout lui semblait étrange. Son regard ne cessait de parcourir la cité.\n"
-        "Des marchands installaient leurs étals. Des soldats patrouillaient le long des remparts.\n"
-        "Parmi les habitants, certains avaient des traits félins. Ils échangeaient, travaillaient et riaient aux côtés des humains, comme si cela avait toujours été ainsi.\n"
-        "Le Voyageur détourna un instant le regard, puis observa de nouveau. Il comprenait peu à peu que ce monde possédait ses propres règles.\n\n"
-        "Le vieil homme s'arrêta devant un immense bâtiment de pierre portant l'emblème d'une Arche.\n"
-        "— Bienvenue dans les Terres Tempérées. C'est ici que commence le véritable chemin des dirigeants. »"
-    ),
-    3: "« Les frontières des Terres Tempérées s'étendaient. De nouvelles cités sortaient de terre, et avec elles, la nécessité de marquer son territoire et d'établir de premières alliances durables. »",
-    4: "« Le Registre des Dirigeants fut ouvert. Chaque nom, chaque acte posé dans ce monde nouveau était désormais consigné pour l'éternité par les scribes de la cité. »",
-    5: "« Le moment était venu de quitter le confort précaire des premières routes pour fonder sa propre base d'opérations. Un premier grand départ vers l'inconnu. »",
-    6: "« Les chariots étaient pleins, les provisions comptées. Le Grand Départ marqua la fin des hésitations : la colonisation des terres sauvages pouvait commencer. »",
-    7: "« Après des jours de marche et de luttes, la première véritable capitale s'éleva, fière et dominante, au cœur du territoire conquis. »",
-    8: "« Les légendes racontaient l'existence d'un Gardien veillant sur les secrets des Arches originelles. Le Voyageur dut prouver sa valeur pour l'approcher. »",
-    9: "« Le voile se leva un peu plus sur l'origine des Arches. Des textes anciens révélèrent que ces portails n'étaient pas le fruit du hasard, mais d'une volonté oubliée. »",
-    10: "« Les bannières flottaient fièrement. Les premières véritables conquêtes territoriales s'achevèrent par la soumission des avant-postes rivaux. »",
-    11: "« La course aux territoires s'accéléra. Chaque clan, chaque dirigeant cherchait à s'emparer des ressources stratégiques avant ses voisins. »",
-    12: "« Une décision cruciale dut être prise sur le front. Un choix militaire qui allait déterminer la survie ou la chute de la garnison. »",
-    13: "« Le fracas des armes résonna dans la vallée. Le premier affrontement direct scella le destin des forces en présence. »",
-    14: "« Il était déjà trop tard pour négocier. Les erreurs de stratégie se payaient au prix fort dans ces contrées impitoyables. »",
-    15: "« Le temps jouait contre le Voyageur. Chaque seconde gaspillée rapprochait l'ennemi des portes de la cité. »",
-    16: "« Un piège soigneusement tendu faillit annoncer la fin de l'expédition. La prudence devint la seule alliée des survivants. »",
-    17: "« L'ombre mystérieuse de Seraph se profilait à l'horizon, apportant avec elle des réponses, mais aussi de nouveaux périls. »",
-    18: "« L'expédition s'enfonça dans les zones inexplorées à la recherche de reliques perdues et de technologies d'un autre âge. »",
-    19: "« Un vieux vétéran des guerres passées partagea son expérience et ses cicatrices avec le Voyageur, offrant de précieux conseils tactiques. »",
-    20: "« Les temples anciens, longtemps endormis, s'éveillèrent un à un, révélant une puissance mystique insoupçonnée. »",
-    21: "« La guerre des temples éclata, dressant les factions les unes contre les autres pour le contrôle de ces sanctuaires sacrés. »",
-    22: "« Le silence de l'après-bataille laissa place au bilan des pertes et à la réorganisation des forces en vue des prochaines échéances. »",
-    23: "« Une réputation naissante précédait désormais le Voyageur à travers tout le royaume, ouvrant de nouvelles portes diplomatiques. »",
-    24: "« Le prix de la progression fut élevé, exigeant des sacrifices constants et une gestion rigoureuse des richesses accumulées. »",
-    25: "« L'épreuve ultime : Le Siège final. Tout ce qui avait été bâti se retrouva jeté dans la balance pour l'assaut décisif. »"
-}
+    @ui.button(label="Parler à Guillaume", style=discord.ButtonStyle.success, emoji="🪕", custom_id="persistent_troubadour_talk_main")
+    async def talk_to_troubadour(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
 
-def get_episode_title(ep_num: int) -> str:
-    return EPISODE_TITLES.get(ep_num, f"Épisode {ep_num}")
+        if not isinstance(interaction.user, discord.Member):
+            return await interaction.followup.send("❌ Erreur.", ephemeral=True)
+
+        view = TroubadourPaginationView(interaction.user, current_ep=1)
+        await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
 
 
-# --- SYSTÈME DE GUILLAUME LE TROUBADOUR (INTERFAÇAGE PAGINÉ) ---
 class TroubadourPaginationView(ui.View):
     def __init__(self, member: discord.Member, current_ep: int = 1):
         super().__init__(timeout=120)
@@ -4031,14 +4054,14 @@ class TroubadourPaginationView(ui.View):
         prev_btn.callback = self.prev_callback
         self.add_item(prev_btn)
 
-        page_indicator = ui.Button(label=f"Épisode {self.current_ep} / 25", style=discord.ButtonStyle.blurple, disabled=True, row=0)
+        page_indicator = ui.Button(label=f"Épisode {self.current_ep} / {TOTAL_EPISODES}", style=discord.ButtonStyle.blurple, disabled=True, row=0)
         self.add_item(page_indicator)
 
-        next_btn = ui.Button(label="Suivant ▶️", style=discord.ButtonStyle.secondary, disabled=(self.current_ep >= 25), row=0)
+        next_btn = ui.Button(label="Suivant ▶️", style=discord.ButtonStyle.secondary, disabled=(self.current_ep >= TOTAL_EPISODES), row=0)
         next_btn.callback = self.next_callback
         self.add_item(next_btn)
 
-        has_story = self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
+        has_story = EPISODES_LOADED and self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
 
         if not has_story:
             rest_btn = ui.Button(label="💤 Le troubadour se repose, revenez plus tard", style=discord.ButtonStyle.danger, disabled=True, row=1)
@@ -4096,7 +4119,7 @@ class TroubadourPaginationView(ui.View):
     async def next_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.member.id:
             return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
-        if self.current_ep < 25:
+        if self.current_ep < TOTAL_EPISODES:
             self.current_ep += 1
             self.update_components()
             await interaction.response.edit_message(embed=self.build_embed(), view=self)
@@ -4120,7 +4143,7 @@ class TroubadourPaginationView(ui.View):
         if interaction.user.id != self.member.id:
             return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
 
-        has_story = self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
+        has_story = EPISODES_LOADED and self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
         if not has_story:
             return await interaction.response.send_message("❌ Le troubadour se repose, revenez plus tard !", ephemeral=True)
 
@@ -4153,7 +4176,7 @@ class TroubadourPaginationView(ui.View):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     def build_embed(self) -> discord.Embed:
-        has_story = self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
+        has_story = EPISODES_LOADED and self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
 
         if not has_story:
             status_txt = "💤 **[Le troubadour se repose, revenez plus tard]**"
@@ -4180,19 +4203,6 @@ class TroubadourPaginationView(ui.View):
         embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
         return embed
 
-class PersistentTroubadourView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @ui.button(label="Parler à Guillaume", style=discord.ButtonStyle.success, emoji="🪕", custom_id="persistent_troubadour_talk_main")
-    async def talk_to_troubadour(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer(ephemeral=True)
-
-        if not isinstance(interaction.user, discord.Member):
-            return await interaction.followup.send("❌ Erreur.", ephemeral=True)
-
-        view = TroubadourPaginationView(interaction.user, current_ep=1)
-        await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
 
 # --- VUE POUR LA BOUTIQUE DES ÉPISODES ---
 class EpisodeShopView(ui.View):
@@ -4229,7 +4239,7 @@ class EpisodeShopView(ui.View):
             button.callback = self.create_callback(item_key, name, price)
             self.add_item(button)
 
-        if all_bought and len(items) > 0 and self.episode_num < 25:
+        if all_bought and len(items) > 0 and self.episode_num < TOTAL_EPISODES:
             next_btn = ui.Button(
                 label="➡️ Épisode Suivant", 
                 style=discord.ButtonStyle.primary, 
@@ -4299,6 +4309,7 @@ class EpisodeShopView(ui.View):
             embed.add_field(name=n, value=f"Prix : **{format_currency(p)}**\n*{desc}*", inline=False)
 
         await interaction.response.edit_message(embed=embed, view=new_view)
+
 
 # --- VUE POUR LA BOUTIQUE DYNAMIQUE CLASSIQUE ---
 class DynamicShopView(ui.View):
@@ -4371,6 +4382,7 @@ class DynamicShopView(ui.View):
 
             await interaction.response.send_message(f"✅ Achat réussi ! Tu as acheté **{item_name}** pour {format_currency(item_price)}{feedback_extra}", ephemeral=True)
         return callback
+
 
 # --- MENU DE DIALOGUE PRINCIPAL DU MARCHAND ---
 class ShopDialogueView(ui.View):
@@ -4490,6 +4502,7 @@ class ShopDialogueView(ui.View):
             return await interaction.response.send_message("❌ Ce n'est pas ton tour !", ephemeral=True)
         await interaction.response.defer()
         await interaction.delete_original_response()
+
 
 class PersistentMerchantView(ui.View):
     def __init__(self):
@@ -4661,6 +4674,9 @@ async def on_ready():
     
     # Chargement des succès depuis GitHub
     await load_achievements_from_github()
+    
+    # Chargement des épisodes depuis GitHub
+    await load_episodes_from_github()
 
     # ------------------------------------------
     # BASE DE DONNÉES
