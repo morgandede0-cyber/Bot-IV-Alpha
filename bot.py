@@ -582,8 +582,7 @@ ACHIEVEMENTS_DEFS = {}
 ACHIEVEMENTS_LOADED = False
 
 # URL du fichier JSON sur GitHub (à modifier avec ton repo)
-GITHUB_ACHIEVEMENTS_URL = "GITHUB_ACHIEVEMENTS_URL = "https://raw.githubusercontent.com/morgandede0-cyber/Bot-IV-Alpha/main/achievements_list.json""
-
+GITHUB_ACHIEVEMENTS_URL = "https://raw.githubusercontent.com/morgandede0-cyber/Bot-IV-Alpha/main/achievements_list.json"
 async def load_achievements_from_github():
     """Charge la liste des succès depuis le fichier JSON sur GitHub"""
     global ACHIEVEMENTS_DEFS, ACHIEVEMENTS_LOADED
@@ -670,8 +669,7 @@ EPISODE_STORIES = {}
 EPISODES_LOADED = False
 
 # URL de base du dossier sur GitHub (à modifier avec ton repo)
-EPISODES_BASE_URL = "EPISODES_BASE_URL = "https://raw.githubusercontent.com/morgandede0-cyber/Bot-IV-Alpha/main/episodes/""
-
+EPISODES_BASE_URL = "https://raw.githubusercontent.com/morgandede0-cyber/Bot-IV-Alpha/main/episodes/"
 # Nombre total d'épisodes disponibles
 TOTAL_EPISODES = 30
 
