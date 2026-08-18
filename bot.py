@@ -4739,4 +4739,3 @@ if __name__ == "__main__":
             "Ne mets pas le token directement dans le code."
         )
     bot.run(TOKEN)
-
