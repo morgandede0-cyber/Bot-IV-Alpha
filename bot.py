@@ -581,13 +581,15 @@ TIERS_COLORS = {
 ACHIEVEMENTS_DEFS = {}
 ACHIEVEMENTS_LOADED = False
 
-# URL du fichier JSON sur GitHub (à modifier avec ton repo)
+# URL du fichier JSON sur GitHub
 GITHUB_ACHIEVEMENTS_URL = "https://raw.githubusercontent.com/morgandede0-cyber/Bot-IV-Alpha/main/achievements_list.json"
+
+
 async def load_achievements_from_github():
     """Charge la liste des succès depuis le fichier JSON sur GitHub"""
     global ACHIEVEMENTS_DEFS, ACHIEVEMENTS_LOADED
     
-    # Fallback local en cas d'échec
+    # Fallback local MINIMAL en cas d'échec (seulement 1 succès pour tester)
     FALLBACK_ACHIEVEMENTS = {
         "games_master": {
             "title": "Maître des Jeux",
@@ -596,15 +598,6 @@ async def load_achievements_from_github():
             "rewards": {"1": 200},
             "order": 1,
             "category": "Jeux",
-            "tier": "Commun"
-        },
-        "wealth_tycoon": {
-            "title": "Magnat de l'Économie",
-            "desc": "Posséder un patrimoine cumulé (Portefeuille + Banque).",
-            "thresholds": {"1": 1000},
-            "rewards": {"1": 250},
-            "order": 2,
-            "category": "Économie",
             "tier": "Commun"
         }
     }
@@ -668,7 +661,7 @@ EPISODE_TITLES = {}
 EPISODE_STORIES = {}
 EPISODES_LOADED = False
 
-# URL de base du dossier sur GitHub (à modifier avec ton repo)
+# URL de base du dossier sur GitHub
 EPISODES_BASE_URL = "https://raw.githubusercontent.com/morgandede0-cyber/Bot-IV-Alpha/main/episodes/"
 # Nombre total d'épisodes disponibles
 TOTAL_EPISODES = 30
@@ -684,7 +677,6 @@ async def load_episodes_from_github():
     try:
         async with aiohttp.ClientSession() as session:
             for ep_num in range(1, TOTAL_EPISODES + 1):
-                # Construire le nom du fichier (S1 EP1.txt, S1 EP2.txt, etc.)
                 filename = f"S1 EP{ep_num}.txt"
                 url = EPISODES_BASE_URL + filename
                 
@@ -692,16 +684,10 @@ async def load_episodes_from_github():
                     async with session.get(url, timeout=10) as response:
                         if response.status == 200:
                             content = await response.text()
-                            
-                            # Séparer le titre du contenu
-                            # Format attendu : première ligne = titre, reste = histoire
                             lines = content.split('\n')
                             if lines:
-                                # La première ligne est le titre
                                 title = lines[0].strip()
-                                # Le reste est l'histoire
                                 story = '\n'.join(lines[1:]).strip()
-                                
                                 titles[ep_num] = title
                                 stories[ep_num] = story
                                 loaded_count += 1
@@ -718,7 +704,6 @@ async def load_episodes_from_github():
             print(f"✅ {loaded_count}/{TOTAL_EPISODES} épisodes chargés depuis GitHub")
             return True
         else:
-            # Fallback minimal
             EPISODE_TITLES = {1: "Épisode 1 — L'Arche"}
             EPISODE_STORIES = {1: "« Une histoire mystérieuse... »"}
             EPISODES_LOADED = True
