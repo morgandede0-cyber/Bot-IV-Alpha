@@ -5,18 +5,26 @@ import os
 import random
 import time
 import sqlite3
+import traceback
 import discord
 from discord import app_commands, ui
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from discord.ext import commands
-from aiohttp import web
 
 # ==========================================
 # 1. CONFIGURATION INITIALE & CONSTANTES
 # ==========================================
 
 # Récupération sécurisée du token via la variable d'environnement
-TOKEN = os.getenv("TAVERNE_TOKEN")
+# Token Discord : plusieurs noms sont acceptés pour éviter les problèmes
+# de configuration sur Railway/Render/etc. Le token doit rester dans les
+# variables d'environnement et ne doit JAMAIS être écrit directement dans le code.
+TOKEN = (
+    os.getenv("TAVERNE_TOKEN")
+    or os.getenv("DISCORD_BOT_TOKEN")
+    or os.getenv("BOT_TOKEN")
+    or os.getenv("TOKEN")
+)
 MAX_BET = 500  # Mise maximale autorisée pour les jeux
 
 intents = discord.Intents.default()
@@ -111,7 +119,7 @@ def init_db():
                 PRIMARY KEY (user_id, quest_date, quest_key)
             )
         """)
-        
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_achievements (
                 user_id INTEGER,
@@ -123,24 +131,101 @@ def init_db():
         """)
 
         # --- TABLE POUR L'HISTOIRE (Guillaume le Troubadour) ---
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='story_progress'")
+        story_table_exists = cursor.fetchone() is not None
+
+        if not story_table_exists:
+            cursor.execute("""
+                CREATE TABLE story_progress (
+                    user_id INTEGER,
+                    episode_id INTEGER,
+                    unlocked_at TEXT,
+                    PRIMARY KEY (user_id, episode_id)
+                )
+            """)
+        else:
+            cursor.execute("PRAGMA table_info(story_progress)")
+            story_columns = [column[1] for column in cursor.fetchall()]
+
+            if "episode_id" not in story_columns and "episode" in story_columns:
+                cursor.execute("ALTER TABLE story_progress ADD COLUMN episode_id INTEGER")
+                cursor.execute("UPDATE story_progress SET episode_id = episode WHERE episode_id IS NULL")
+
+            if "unlocked_at" not in story_columns:
+                cursor.execute("ALTER TABLE story_progress ADD COLUMN unlocked_at TEXT")
+                cursor.execute(
+                    "UPDATE story_progress SET unlocked_at = ? WHERE unlocked_at IS NULL OR unlocked_at = ''",
+                    (time.strftime("%Y-%m-%d %H:%M:%S"),)
+                )
+
+            cursor.execute("PRAGMA table_info(story_progress)")
+            story_columns = [column[1] for column in cursor.fetchall()]
+            if "episode" in story_columns and "episode_id" in story_columns:
+                cursor.execute("UPDATE story_progress SET episode_id = episode WHERE episode_id IS NULL")
+
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_story_progress_user_episode
+                ON story_progress(user_id, episode_id)
+            """)
+
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS story_progress (
+            CREATE TABLE IF NOT EXISTS inventory (
                 user_id INTEGER,
-                episode_id INTEGER,
-                unlocked_at TEXT,
-                PRIMARY KEY (user_id, episode_id)
+                item_name TEXT,
+                quantity INTEGER DEFAULT 1,
+                PRIMARY KEY (user_id, item_name)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS shop_items (
+                item_key TEXT PRIMARY KEY,
+                name TEXT,
+                price INTEGER,
+                description TEXT,
+                shop_type TEXT DEFAULT 'normal',
+                episode INTEGER DEFAULT 0,
+                required_role_id INTEGER DEFAULT NULL,
+                role_to_give_id INTEGER DEFAULT NULL
             )
         """)
 
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS quest_reward_state (
-                user_id INTEGER PRIMARY KEY,
-                base_reward INTEGER DEFAULT 0,
-                quest_date TEXT DEFAULT '',
-                quest_streak INTEGER DEFAULT 0,
-                last_claim_date TEXT DEFAULT ''
+        cursor.execute("PRAGMA table_info(shop_items)")
+        shop_columns = [column[1] for column in cursor.fetchall()]
+        for col, col_type in [
+            ("shop_type", "TEXT DEFAULT 'normal'"),
+            ("episode", "INTEGER DEFAULT 0"),
+            ("required_role_id", "INTEGER DEFAULT NULL"),
+            ("role_to_give_id", "INTEGER DEFAULT NULL"),
+        ]:
+            if col not in shop_columns:
+                cursor.execute(f"ALTER TABLE shop_items ADD COLUMN {col} {col_type}")
+
+        cursor.execute("SELECT COUNT(*) FROM shop_items")
+        if cursor.fetchone()[0] == 0:
+            cursor.executemany(
+                "INSERT INTO shop_items (item_key, name, price, description, shop_type, episode, required_role_id, role_to_give_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    ("A1", "👑 Rôle VIP", 5000, "Un statut de VIP sur le serveur.", "normal", 0, None, None),
+                    ("A2", "🎁 Boîte Mystère", 1000, "Contient une surprise aléatoire !", "normal", 0, None, None),
+                    ("SP1", "💎 Épée Légendaire", 25000, "Une arme surpuissante réservée aux VIP.", "special", 0, None, None),
+                ],
             )
-        """)
+
+        episode_items = []
+        for ep in range(1, 26):
+            label = f"0{ep:02d}" if ep < 10 else f"{ep}"
+            for suffix, name in [("1", "Alpha"), ("2", "Bêta"), ("3", "Gamma"), ("4", "Delta")]:
+                episode_items.append((
+                    f"EP{ep}_{suffix}",
+                    f"Relique {name} [{label}]",
+                    500,
+                    "Objet d'histoire essentiel.",
+                    "episode", ep, None, None,
+                ))
+        cursor.executemany(
+            "INSERT OR IGNORE INTO shop_items (item_key, name, price, description, shop_type, episode, required_role_id, role_to_give_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            episode_items,
+        )
 
         columns_to_add = [
             ("last_daily", "INTEGER DEFAULT 0"),
@@ -472,7 +557,7 @@ def claim_all_daily_quests(user_id: int):
         conn.commit()
 
     update_wallet(user_id, total_reward)
-    
+
     return {
         "base_reward": base_reward,
         "multiplier": multiplier,
@@ -493,93 +578,42 @@ TIERS_COLORS = {
     1: "#CD7F32"  # Bronze
 }
 
-# ==========================================
-# NOUVELLE LISTE DES SUCCÈS AVEC ORDRE PROGRESSIF
-# ==========================================
-
 ACHIEVEMENTS_DEFS = {
-    # === SUCCÈS QUÊTES JOURNALIÈRES (PROGRESSIFS) ===
-    "quest_bapteme": {
-        "title": "Baptême du Feu",
-        "desc": "Déclencher sa toute première quête journalière via /quetes.",
-        "thresholds": {1: 1},
-        "rewards": {1: 100},
-        "order": 1,
-        "category": "Quêtes"
-    },
-    "quest_habitué": {
-        "title": "Habitué des Missions",
-        "desc": "Valider un total de 10 quêtes journalières via /quetes.",
-        "thresholds": {1: 10},
-        "rewards": {1: 200},
-        "order": 2,
-        "category": "Quêtes"
-    },
-    "quest_veteran": {
-        "title": "Vétéran des Commandes",
-        "desc": "Compléter 50 quêtes journalières avec succès.",
-        "thresholds": {1: 50},
-        "rewards": {1: 500},
-        "order": 3,
-        "category": "Quêtes"
-    },
-    "quest_seigneur": {
-        "title": "Seigneur des Chroniques",
-        "desc": "Venir à bout de 150 quêtes journalières sur le serveur.",
-        "thresholds": {1: 150},
-        "rewards": {1: 1000},
-        "order": 4,
-        "category": "Quêtes"
-    },
-    "quest_legende": {
-        "title": "Légende de l'Aventure",
-        "desc": "Atteindre le palier ultime de 500 quêtes journalières validées.",
-        "thresholds": {1: 500},
-        "rewards": {1: 2500},
-        "order": 5,
-        "category": "Quêtes"
-    },
-    
-    # === SUCCÈS EXISTANTS ===
     "games_master": {
         "title": "Maître des Jeux",
         "desc": "Gagner des parties dans les jeux de casino.",
         "thresholds": {1: 1},
-        "rewards": {1: 200},
-        "order": 6,
-        "category": "Jeux"
+        "rewards": {1: 200}
     },
     "wealth_tycoon": {
         "title": "Magnat de l'Économie",
         "desc": "Posséder un patrimoine cumulé (Portefeuille + Banque).",
         "thresholds": {1: 1000},
-        "rewards": {1: 250},
-        "order": 7,
-        "category": "Économie"
+        "rewards": {1: 250}
     },
     "tavern_guest": {
         "title": "Habitué de la Taverne",
         "desc": "Commander des pintes chez Jim le Tavernier.",
         "thresholds": {1: 1},
-        "rewards": {1: 150},
-        "order": 8,
-        "category": "Taverne"
+        "rewards": {1: 150}
     },
     "arena_gladiator": {
         "title": "Gladiateur de l'Arène",
         "desc": "Combattre et terrasser Bob ou des rivaux en duel.",
         "thresholds": {1: 1},
-        "rewards": {1: 300},
-        "order": 9,
-        "category": "Arène"
+        "rewards": {1: 300}
     },
     "criminal_mind": {
         "title": "Hors-la-loi",
         "desc": "Réussir des crimes, des braquages ou des vols.",
         "thresholds": {1: 1},
-        "rewards": {1: 250},
-        "order": 10,
-        "category": "Crime"
+        "rewards": {1: 250}
+    },
+    "quest_seeker": {
+        "title": "Aventurier Régulier",
+        "desc": "Réclamer ses quêtes journalières accomplies.",
+        "thresholds": {1: 1},
+        "rewards": {1: 200}
     }
 }
 
@@ -620,9 +654,9 @@ async def generate_mee6_profile_card(member: discord.Member, unlocked_achievemen
     display_name = member.display_name
     draw.text((120, 28), display_name, fill="#FFFFFF", font=font_name)
     draw.text((120, 58), "• IV • | Membre des Sceaux", fill="#949BA4", font=font_sub)
-    
+
     total_unlocked = len(unlocked_achievements)
-    draw.text((120, 82), f"Achievements unlocked  {total_unlocked} | {len(ACHIEVEMENTS_DEFS)}", fill="#B5BAC1", font=font_sub)
+    draw.text((120, 82), f"Achievements unlocked  {total_unlocked} | 6", fill="#B5BAC1", font=font_sub)
 
     draw.text((25, 118), "ACHIEVEMENTS", fill="#80848E", font=font_header)
 
@@ -642,7 +676,7 @@ async def generate_mee6_profile_card(member: discord.Member, unlocked_achievemen
 
         poly_points = [(bx + 22, by), (bx + 44, by + 12), (bx + 44, by + 38), (bx + 22, by + 50), (bx, by + 38), (bx, by + 12)]
         draw.polygon(poly_points, fill="#0F151D", outline=color)
-        
+
         draw.rounded_rectangle([bx + 4, by + 42, bx + 40, by + 58], radius=4, fill="#232428")
         draw.text((bx + 22, by + 50), tier_name[:3].upper(), fill="#FFFFFF", font=font_badge_tier, anchor="mm")
 
@@ -665,10 +699,10 @@ def evaluate_stat_for_achievement(key: str, user_id: int) -> int:
         cursor = conn.cursor()
         cursor.execute("SELECT wallet, bank, beers_today, games_played, games_won FROM users WHERE user_id = ?", (user_id,))
         row = cursor.fetchone()
-        
+
         if not row:
             return 0
-            
+
         wallet, bank, beers_today, games_played, games_won = row
         wallet = wallet or 0
         bank = bank or 0
@@ -677,14 +711,7 @@ def evaluate_stat_for_achievement(key: str, user_id: int) -> int:
         games_won = games_won or 0
         total_money = wallet + bank
 
-        # === NOUVEAUX SUCCÈS QUÊTES ===
-        if key in ["quest_bapteme", "quest_habitué", "quest_veteran", "quest_seigneur", "quest_legende"]:
-            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
-            q_row = cursor.fetchone()
-            return q_row[0] if q_row else 0
-        
-        # === SUCCÈS EXISTANTS ===
-        elif key == "games_master":
+        if key == "games_master":
             return games_won
         elif key == "wealth_tycoon":
             return total_money
@@ -694,6 +721,10 @@ def evaluate_stat_for_achievement(key: str, user_id: int) -> int:
             return games_played
         elif key == "criminal_mind":
             return games_played
+        elif key == "quest_seeker":
+            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
+            q_row = cursor.fetchone()
+            return q_row[0] if q_row else 0
     return 0
 
 
@@ -711,7 +742,7 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
             continue
 
         current_stat = evaluate_stat_for_achievement(key, user_id)
-        
+
         if current_stat >= data["thresholds"][1]:
             target_tier = 1
             reward_sum = data["rewards"][target_tier]
@@ -745,18 +776,12 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
                             if target_channel:
                                 user_obj = bot_client.get_user(user_id)
                                 user_mention = user_obj.mention if user_obj else f"<@{user_id}>"
-                                
+
                                 member_obj = target_channel.guild.get_member(user_id) if target_channel.guild else None
                                 if member_obj:
-                                    # Récupérer tous les succès débloqués pour l'affichage
-                                    with get_db_connection() as db_conn2:
-                                        cur2 = db_conn2.cursor()
-                                        cur2.execute("SELECT achievement_key, tier FROM user_achievements WHERE user_id = ?", (user_id,))
-                                        all_unlocked = {row[0]: row[1] for row in cur2.fetchall()}
-                                    
-                                    img_buf = await generate_mee6_profile_card(member_obj, all_unlocked)
+                                    img_buf = await generate_mee6_profile_card(member_obj, {key: target_tier})
                                     file = discord.File(fp=img_buf, filename="achievement.png")
-                                    content = f"GG {user_mention}, tu as débloqué le succès **{data['title']}** ! 🎉"
+                                    content = f"GG {user_mention}, tu as atteint le rang **{TIERS_NAMES[target_tier]}** pour le succès **{data['title']}** ! 🎉"
                                     bot.loop.create_task(target_channel.send(content=content, file=file))
                 except Exception as e:
                     print(f"❌ Erreur notification succès : {e}")
@@ -773,7 +798,7 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
 def check_cooldown(user_id: int, command_name: str, duration: int) -> int:
     if TEST_MODE_ENABLED:
         return 0
-        
+
     now = int(time.time())
     key = (user_id, command_name)
     expire = cooldowns.get(key, 0)
@@ -855,7 +880,7 @@ class BetModal(ui.Modal):
             bet_amount = int(self.bet_input.value)
         except ValueError:
             return await interaction.followup.send("❌ Veuillez entrer un nombre entier valide.", ephemeral=True)
-        
+
         await self.callback_game(interaction, bet_amount)
 
 
@@ -870,10 +895,10 @@ class PMUBetModal(ui.Modal, title="🏁 PMU - Choix du cheval et mise"):
             bet_amount = int(self.bet_input.value)
         except ValueError:
             return await interaction.followup.send("❌ Valeurs invalides.", ephemeral=True)
-        
+
         if cheval not in [1, 2, 3, 4]:
             return await interaction.followup.send("❌ Choisis un cheval entre 1 et 4 !", ephemeral=True)
-        
+
         await run_pmu_game(interaction, cheval, bet_amount)
 
 
@@ -891,7 +916,7 @@ class BrookPMUBetModal(ui.Modal, title="📜 Brook - Montant de la mise"):
             bet_amount = int(self.bet_input.value)
         except ValueError:
             return await interaction.followup.send("❌ Veuillez entrer un montant valide.", ephemeral=True)
-        
+
         await run_brook_pmu_game(interaction, self.horse_choice, bet_amount, self.dynamic_odds)
 
 
@@ -923,10 +948,10 @@ class DuelPFCView(ui.View):
         if len(self.choices) == 2:
             for child in self.children:
                 child.disabled = True
-            
+
             c_choice = self.choices[self.challenger.id]
             o_choice = self.choices[self.opponent.id]
-            
+
             emaps = {"pierre": "🪨 Pierre", "feuille": "📄 Feuille", "ciseau": "✂️ Ciseau"}
 
             if c_choice == o_choice:
@@ -999,7 +1024,7 @@ class DuelDiceView(ui.View):
         if len(self.rolls) == 2:
             for child in self.children:
                 child.disabled = True
-            
+
             c_score = self.rolls[self.challenger.id]
             o_score = self.rolls[self.opponent.id]
 
@@ -1009,7 +1034,7 @@ class DuelDiceView(ui.View):
                 update_wallet(self.challenger.id, self.bet)
                 update_wallet(self.opponent.id, -self.bet)
                 update_game_stats(self.challenger.id, won=True)
-                update_game_stats(self.opponent.id, won=False)
+                update_game_stats(self.challenger.id, won=False)
                 await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.challenger.mention} ({c_score} vs {o_score}) !** Il remporte **{format_currency(self.bet)}**."
             else:
@@ -1362,15 +1387,15 @@ class JimTavernView(ui.View):
     async def pinte(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         user_id = interaction.user.id
-        
+
         retry_after = check_cooldown(user_id, "jim_taverne", 3600)
         if retry_after > 0:
             minutes, seconds = divmod(retry_after, 60)
             msg_text = f'🍺 *Jim te regarde de travers* : "Tu as déjà bu, attends **{minutes}m {seconds}s**."'
             return await interaction.followup.send(msg_text, ephemeral=True)
-        
+
         wallet, _, _, _, beers_today, last_beer_date, _, _, _ = get_user(user_id)
-        
+
         today_str = time.strftime("%Y-%m-%d")
         if last_beer_date != today_str:
             beers_today = 0
@@ -1393,7 +1418,7 @@ class JimTavernView(ui.View):
             ("loss", 80, f"💥 En te levant d'un coup un peu trop sec, tu bouscules un client et dois payer pour casser sa chope ! -**{format_currency(80)}**"),
             ("neutral", 0, f"🍖 Jim t'a servi une pinte bien fraîche et un ragoût maison. Santé !"),
         ]
-        
+
         event_type, amount, outcome = random.choice(events)
         if event_type == "gain":
             update_wallet(user_id, amount)
@@ -1576,7 +1601,7 @@ class JohnCrimeView(ui.View):
             minutes, seconds = divmod(retry_after, 60)
             msg_text = f'🥷 *John* : "Reviens dans **{minutes}m {seconds}s**."'
             return await interaction.followup.send(msg_text, ephemeral=True)
-        
+
         success = random.choice([True, False])
         wallet, _, _, _, _, _, _, _, _ = get_user(user_id)
         update_quest_progress(user_id, "crime_attempt", 1)
@@ -1602,7 +1627,7 @@ class JohnCrimeView(ui.View):
             minutes, seconds = divmod(retry_after, 60)
             msg_text = f'🗡️ *John* : "Patiente encore **{minutes}m {seconds}s**."'
             return await interaction.response.send_message(msg_text, ephemeral=True)
-        
+
         embed = discord.Embed(
             title="🗡️ Braquage en cours",
             description="Sélectionne ta cible dans le menu déroulant ci-dessous :",
@@ -1622,7 +1647,7 @@ class JohnCrimeView(ui.View):
         update_quest_progress(user_id, "vault_attempt", 1)
         prize = random.randint(2000, 7500)
         secret_code = f"{random.randint(0, 9)}{random.randint(0, 9)}{random.randint(0, 9)}{random.randint(0, 9)}"
-        
+
         embed = discord.Embed(
             title="🔐 Braquage de la Brinks",
             description=(
@@ -1746,7 +1771,7 @@ class BobArenaView(ui.View):
         if retry_after > 0:
             minutes, seconds = divmod(retry_after, 60)
             return await interaction.response.send_message(f'⚔️ *Bob* : "Reprenez votre souffle, l\'arène n\'ouvre ses portes qu\'dans **{minutes}m {seconds}s**."', ephemeral=True)
-        
+
         await interaction.response.send_modal(BetModal("⚔️ Arène - Mise de Combat", run_arena_fight))
 
     @ui.button(label="Défier un ami (Duel PvP)", style=discord.ButtonStyle.secondary, emoji="🤺", custom_id="bob_arena_duel")
@@ -1959,6 +1984,7 @@ class ArenaPvPView(ui.View):
                 update_wallet(self.opponent.id, -self.bet)
                 update_game_stats(self.challenger.id, won=True)
                 update_game_stats(self.opponent.id, won=False)
+                update_game_stats(self.challenger.id, won=False)
                 await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
                 res_text = f"\n\n🏆 **VICTOIRE de {self.challenger.mention} !** Il remporte **{format_currency(self.bet)}**."
                 color = discord.Color.green()
@@ -2124,9 +2150,9 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
 
     max_p = max(positions.values())
     gagnants = [c for c, p in positions.items() if p >= max_p]
-    
+
     gagnant = random.choices(gagnants, weights=[weights[c-1] for c in gagnants], k=1)[0] if len(gagnants) > 1 else gagnants[0]
-    
+
     cote = dynamic_odds[horse_choice]
 
     if horse_choice == gagnant:
@@ -2191,7 +2217,7 @@ class BrookBookmakerView(ui.View):
     def __init__(self, odds: dict):
         super().__init__(timeout=None)
         self.odds = odds
-        
+
         self.horse_1.label = f"Canabis (x{odds[1]})"
         self.horse_2.label = f"Jolly Jumper (x{odds[2]})"
         self.horse_3.label = f"Pégase (x{odds[3]})"
@@ -2235,7 +2261,7 @@ async def banque(interaction: discord.Interaction):
     if file_bank:
         embed.set_image(url="attachment://bank.png")
     embed.set_footer(text="Banque des IV Sceaux • Service Financier Permanent")
-    
+
     kwargs = {"embed": embed, "view": BankView(), "ephemeral": True}
     if file_bank:
         kwargs["file"] = file_bank
@@ -2299,7 +2325,7 @@ async def vault(interaction: discord.Interaction):
     update_quest_progress(user_id, "vault_attempt", 1)
     prize = random.randint(2000, 7500)
     secret_code = f"{random.randint(0, 9)}{random.randint(0, 9)}{random.randint(0, 9)}{random.randint(0, 9)}"
-    
+
     embed = discord.Embed(
         title="🔐 Braquage de la Brinks",
         description=(
@@ -2555,7 +2581,7 @@ class QuestClaimAllButton(ui.Button):
 
         quests = get_daily_quests(interaction.user.id)
         base_reward, quest_streak, _ = get_quest_reward_state(interaction.user.id)
-        
+
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
 
         embed = build_quest_embed(interaction.user, quests, base_reward, quest_streak)
@@ -2615,7 +2641,7 @@ async def reset_achievements(interaction: discord.Interaction, membre: discord.M
             cursor.execute("DELETE FROM user_achievements")
             msg = "✅ Les succès de **tous les joueurs** du serveur ont été effacés définitivement !"
         conn.commit()
-    
+
     await interaction.followup.send(msg, ephemeral=True)
 
 
@@ -2681,7 +2707,7 @@ async def pay(interaction: discord.Interaction, receiver: discord.Member, amount
     await interaction.followup.send(f"💸 {interaction.user.mention} ➔ **{format_currency(amount)}** à {receiver.mention} !")
 
 
-@bot.tree.command(name="setup", description="[ADMIN] Configure les salons pour la Banque, Jim, John, Brook, Bob ou les Succès")
+@bot.tree.command(name="setup", description="[ADMIN] Configure les salons pour la Banque, Jim, John, Brook, Bob, Marchand, Troubadour ou les Succès")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.choices(ai_type=[
     app_commands.Choice(name="Tous les PNJ dans un salon unique (Carrefour PNJ)", value="all"),
@@ -2690,6 +2716,8 @@ async def pay(interaction: discord.Interaction, receiver: discord.Member, amount
     app_commands.Choice(name="crime (John)", value="crime"),
     app_commands.Choice(name="bookmaker (Brook)", value="brook"),
     app_commands.Choice(name="arene (Bob le maître d'arme)", value="arene"),
+    app_commands.Choice(name="marchand (Tom)", value="marchand"),
+    app_commands.Choice(name="troubadour (Guillaume)", value="troubadour"),
     app_commands.Choice(name="achievements (Salon des succès débloqués)", value="achievements")
 ])
 async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.TextChannel):
@@ -2699,6 +2727,7 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
     if ai_type == "all":
         await interaction.followup.send(f"✅ Le Carrefour des PNJ a bien été déployé dans {salon.mention} !", ephemeral=True)
 
+        # 1. Jim
         if os.path.exists("assets/jim.png"):
             file_jim = discord.File("assets/jim.png", filename="jim.png")
             embed_jim = discord.Embed(
@@ -2720,6 +2749,7 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
             )
             await salon.send(embed=embed_jim, view=JimTavernView())
 
+        # 2. John
         if os.path.exists("assets/john.png"):
             file_john = discord.File("assets/john.png", filename="john.png")
             embed_john = discord.Embed(
@@ -2741,6 +2771,7 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
             )
             await salon.send(embed=embed_john, view=JohnCrimeView())
 
+        # 3. Bob
         if os.path.exists("assets/bob.png"):
             file_bob = discord.File("assets/bob.png", filename="bob.png")
             embed_bob = discord.Embed(
@@ -2762,6 +2793,7 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
             )
             await salon.send(embed=embed_bob, view=BobArenaView())
 
+        # 4. Brook
         odds = generate_brook_odds()
         if os.path.exists("assets/brook.png"):
             file_brook = discord.File("assets/brook.png", filename="brook.png")
@@ -2785,6 +2817,30 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
                 color=0x1ABC9C
             )
             await salon.send(embed=embed_brook, view=BrookBookmakerView(odds))
+
+        # 5. Marchand (Tom)
+        embed_marchand = discord.Embed(
+            title="✨ Bienvenue au Salon du Shop !",
+            description=(
+                "🦊 **Tom le Marchand** est installé ici en permanence.\n\n"
+                "👉 **Clique sur le bouton ci-dessous** pour engager la discussion avec lui !"
+            ),
+            color=discord.Color.gold()
+        )
+        embed_marchand.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
+        await salon.send(embed=embed_marchand, view=PersistentMerchantView())
+
+        # 6. Troubadour (Guillaume)
+        embed_troubadour = discord.Embed(
+            title="🪕 Guillaume le Troubadour",
+            description=(
+                "✨ **Guillaume** est arrivé pour conter les épopées de vos voyages.\n\n"
+                "👉 **Clique sur le bouton ci-dessous** pour lui parler et lui donner vos reliques d'épisodes !"
+            ),
+            color=discord.Color.purple()
+        )
+        embed_troubadour.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
+        await salon.send(embed=embed_troubadour, view=PersistentTroubadourView())
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -2847,7 +2903,7 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
             await salon.send(embed=embed, file=file_jim, view=JimTavernView())
         else:
             await salon.send(embed=embed, view=JimTavernView())
-    
+
     elif ai_type == "crime":
         await interaction.followup.send(f"✅ John le brigand rôde désormais dans {salon.mention} avec style !", ephemeral=True)
         embed = discord.Embed(
@@ -2897,6 +2953,32 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
         else:
             await salon.send(embed=embed, view=BobArenaView())
         await interaction.followup.send(f"✅ Bob le maître d'arme a dressé son arène dans {salon.mention} avec panache !", ephemeral=True)
+
+    elif ai_type == "marchand":
+        embed = discord.Embed(
+            title="✨ Bienvenue au Salon du Shop !",
+            description=(
+                "🦊 **Tom le Marchand** est installé ici en permanence.\n\n"
+                "👉 **Clique sur le bouton ci-dessous** pour engager la discussion avec lui !"
+            ),
+            color=discord.Color.gold()
+        )
+        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
+        await salon.send(embed=embed, view=PersistentMerchantView())
+        await interaction.followup.send(f"✅ Tom le Marchand a été installé dans {salon.mention} avec succès !", ephemeral=True)
+
+    elif ai_type == "troubadour":
+        embed = discord.Embed(
+            title="🪕 Guillaume le Troubadour",
+            description=(
+                "✨ **Guillaume** est arrivé pour conter les épopées de vos voyages.\n\n"
+                "👉 **Clique sur le bouton ci-dessous** pour lui parler et lui donner vos reliques d'épisodes !"
+            ),
+            color=discord.Color.purple()
+        )
+        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
+        await salon.send(embed=embed, view=PersistentTroubadourView())
+        await interaction.followup.send(f"✅ Guillaume le Troubadour a été installé dans {salon.mention} avec succès !", ephemeral=True)
 
 
 @bot.tree.command(name="add-money", description="[ADMIN] Ajouter de l'argent")
@@ -3730,18 +3812,13 @@ async def poker_solitaire(interaction: discord.Interaction):
     await interaction.response.send_modal(BetModal("⚜️ Poker Solitaire - Mise", run_poker_game))
 
 
-
-
 # =============================================================
 # FUSION DE ShopIV(1).py — SYSTÈME BOUTIQUE & GUILLAUME LE TROUBADOUR
 # =============================================================
-# Les fonctionnalités originales de ShopIV sont conservées ici.
-# Les fonctions communes (SQLite, get_user, format_currency, bot) utilisent
-# désormais les versions déjà présentes dans ce fichier principal.
 
 # --- Dictionnaire des titres d'épisodes (1 à 25) ---
 EPISODE_TITLES = {
-    1: "Épisode 1 — L’Arche",
+    1: "Épisode 1 — L'Arche",
     2: "Épisode 2 — Les Terres Tempérées",
     3: "Épisode 3 — Les Premières Villes",
     4: "Épisode 4 — Le Registre des Dirigeants",
@@ -3758,11 +3835,11 @@ EPISODE_TITLES = {
     15: "Épisode 15 — Le Temps Joue Contre Toi",
     16: "Épisode 16 — Le Piège",
     17: "Épisode 17 — Seraph",
-    18: "Épisode 18 — L’Expédition",
+    18: "Épisode 18 — L'Expédition",
     19: "Épisode 19 — Le Vétéran",
     20: "Épisode 20 — Les Temples",
     21: "Épisode 21 — La Guerre des Temples",
-    22: "Épisode 22 — L’Après-Bataille",
+    22: "Épisode 22 — L'Après-Bataille",
     23: "Épisode 23 — Une Réputation naissante",
     24: "Épisode 24 — Le Prix de la Progression",
     25: "Épisode 25 — Le Siège"
@@ -3776,32 +3853,32 @@ EPISODE_STORIES = {
         "Au centre se dressait une immense arche de pierre.\n"
         "Les enfants jouaient autour.\n"
         "Les adultes passaient devant sans même la regarder.\n"
-        "Pour eux… Ce n’était qu’une vieille ruine.\n\n"
+        "Pour eux… Ce n'était qu'une vieille ruine.\n\n"
         "« Mon ballon ! »\n\n"
-        "Une petite voix brisa le silence. Un ballon venait de rouler sous l’arche. Sans réfléchir, le Voyageur courut le récupérer. "
+        "Une petite voix brisa le silence. Un ballon venait de rouler sous l'arche. Sans réfléchir, le Voyageur courut le récupérer. "
         "Il le ramassa, puis fit un pas pour revenir.\n\n"
-        "Le vent s’arrêta. Plus un bruit. Il leva lentement les yeux. Le parc had disparu.\n"
+        "Le vent s'arrêta. Plus un bruit. Il leva lentement les yeux. Le parc had disparu.\n"
         "À sa place… Une vaste route pavée traversait une immense plaine. Des caravanes avançaient lentement. Des marchands discutaient.\n"
         "Le Voyageur resta figé.\n\n"
-        "Parmi les voyageurs, certains ne ressemblaient à aucun être qu’il avait déjà vu. Leurs traits rappelaient ceux de grands félins, "
-        "pourtant personne ne semblait leur accorder le moindre regard. Pendant un instant, il se demanda s’il était en train de rêver.\n\n"
-        "Des gardes escortaient les convois. Au loin, une immense cité dominait l’horizon. Tout autour, de nombreuses villes s’étendaient à perte de vue. "
-        "Presque toutes arboraient une bannière flottant au-dessus de leurs remparts. Certaines laissaient s’élever d’épaisses colonnes de fumée, "
-        "signe qu’une bataille venait d’éclater.\n\n"
+        "Parmi les voyageurs, certains ne ressemblaient à aucun être qu'il avait déjà vu. Leurs traits rappelaient ceux de grands félins, "
+        "pourtant personne ne semblait leur accorder le moindre regard. Pendant un instant, il se demanda s'il était en train de rêver.\n\n"
+        "Des gardes escortaient les convois. Au loin, une immense cité dominait l'horizon. Tout autour, de nombreuses villes s'étendaient à perte de vue. "
+        "Presque toutes arboraient une bannière flottant au-dessus de leurs remparts. Certaines laissaient s'élever d'épaisses colonnes de fumée, "
+        "signe qu'une bataille venait d'éclater.\n\n"
         "Un marchand le regarda de la tête aux pieds :\n"
-        "— Ces vêtements… Tu viens d’une Arche, n’est-ce pas ?\n\n"
-        "Le Voyageur n’eut pas le temps de répondre. Une corne de guerre retentit. Tous les regards se tournèrent vers l’horizon.\n"
+        "— Ces vêtements… Tu viens d'une Arche, n'est-ce pas ?\n\n"
+        "Le Voyageur n'eut pas le temps de répondre. Une corne de guerre retentit. Tous les regards se tournèrent vers l'horizon.\n"
         "Au loin… Une immense armée avançait vers la cité. Les portes commencèrent à se refermer.\n\n"
         "Le marchand attrapa brusquement le bras du Voyageur :\n"
         "— Si tu veux vivre… ne reste pas ici ! »"
     ),
     2: (
-        "« Le Voyageur suivit le vieil homme à través les rues pavées.\n\n"
+        "« Le Voyageur suivit le vieil homme à travers les rues pavées.\n\n"
         "Tout lui semblait étrange. Son regard ne cessait de parcourir la cité.\n"
         "Des marchands installaient leurs étals. Des soldats patrouillaient le long des remparts.\n"
         "Parmi les habitants, certains avaient des traits félins. Ils échangeaient, travaillaient et riaient aux côtés des humains, comme si cela avait toujours été ainsi.\n"
         "Le Voyageur détourna un instant le regard, puis observa de nouveau. Il comprenait peu à peu que ce monde possédait ses propres règles.\n\n"
-        "Le vieil homme s'arrêta devant un immense bâtiment de pierre portant l’emblème d’une Arche.\n"
+        "Le vieil homme s'arrêta devant un immense bâtiment de pierre portant l'emblème d'une Arche.\n"
         "— Bienvenue dans les Terres Tempérées. C'est ici que commence le véritable chemin des dirigeants. »"
     ),
     3: "« Les frontières des Terres Tempérées s'étendaient. De nouvelles cités sortaient de terre, et avec elles, la nécessité de marquer son territoire et d'établir de premières alliances durables. »",
@@ -3817,7 +3894,7 @@ EPISODE_STORIES = {
     13: "« Le fracas des armes résonna dans la vallée. Le premier affrontement direct scella le destin des forces en présence. »",
     14: "« Il était déjà trop tard pour négocier. Les erreurs de stratégie se payaient au prix fort dans ces contrées impitoyables. »",
     15: "« Le temps jouait contre le Voyageur. Chaque seconde gaspillée rapprochait l'ennemi des portes de la cité. »",
-    16: "« Un piège soigneusement tendu faillit anoncer la fin de l'expédition. La prudence devint la seule alliée des survivants. »",
+    16: "« Un piège soigneusement tendu faillit annoncer la fin de l'expédition. La prudence devint la seule alliée des survivants. »",
     17: "« L'ombre mystérieuse de Seraph se profilait à l'horizon, apportant avec elle des réponses, mais aussi de nouveaux périls. »",
     18: "« L'expédition s'enfonça dans les zones inexplorées à la recherche de reliques perdues et de technologies d'un autre âge. »",
     19: "« Un vieux vétéran des guerres passées partagea son expérience et ses cicatrices avec le Voyageur, offrant de précieux conseils tactiques. »",
@@ -3825,104 +3902,12 @@ EPISODE_STORIES = {
     21: "« La guerre des temples éclata, dressant les factions les unes contre les autres pour le contrôle de ces sanctuaires sacrés. »",
     22: "« Le silence de l'après-bataille laissa place au bilan des pertes et à la réorganisation des forces en vue des prochaines échéances. »",
     23: "« Une réputation naissante précédait désormais le Voyageur à travers tout le royaume, ouvrant de nouvelles portes diplomatiques. »",
-    24: "« Le prix de la progression foi élevé, exigeant des sacrifices constants et une gestion rigoureuse des richesses accumulées. »",
+    24: "« Le prix de la progression fut élevé, exigeant des sacrifices constants et une gestion rigoureuse des richesses accumulées. »",
     25: "« L'épreuve ultime : Le Siège final. Tout ce qui avait été bâti se retrouva jeté dans la balance pour l'assaut décisif. »"
 }
 
-def init_shop_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            wallet INTEGER DEFAULT 0,
-            bank INTEGER DEFAULT 0,
-            last_daily INTEGER DEFAULT 0,
-            streak INTEGER DEFAULT 0
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS inventory (
-            user_id INTEGER,
-            item_name TEXT,
-            quantity INTEGER DEFAULT 1,
-            PRIMARY KEY (user_id, item_name)
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS story_progress (
-            user_id INTEGER,
-            episode_id INTEGER,
-            PRIMARY KEY (user_id, episode_id)
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS shop_items (
-            item_key TEXT PRIMARY KEY,
-            name TEXT,
-            price INTEGER,
-            description TEXT,
-            shop_type TEXT DEFAULT 'normal',
-            episode INTEGER DEFAULT 0,
-            required_role_id INTEGER DEFAULT NULL,
-            role_to_give_id INTEGER DEFAULT NULL
-        )
-    """)
-    
-    cursor.execute("PRAGMA table_info(shop_items)")
-    columns = [column[1] for column in cursor.fetchall()]
-    if "shop_type" not in columns:
-        cursor.execute("ALTER TABLE shop_items ADD COLUMN shop_type TEXT DEFAULT 'normal'")
-    if "episode" not in columns:
-        cursor.execute("ALTER TABLE shop_items ADD COLUMN episode INTEGER DEFAULT 0")
-    if "required_role_id" not in columns:
-        cursor.execute("ALTER TABLE shop_items ADD COLUMN required_role_id INTEGER DEFAULT NULL")
-    if "role_to_give_id" not in columns:
-        cursor.execute("ALTER TABLE shop_items ADD COLUMN role_to_give_id INTEGER DEFAULT NULL")
-
-    cursor.execute("SELECT COUNT(*) FROM shop_items")
-    if cursor.fetchone()[0] == 0:
-        default_items = [
-            ("A1", "👑 Rôle VIP", 5000, "Un statut de VIP sur le serveur.", "normal", 0, None, None),
-            ("A2", "🎁 Boîte Mystère", 1000, "Contient une surprise aléatoire !", "normal", 0, None, None),
-            ("SP1", "💎 Épée Légendaire", 25000, "Une arme surpuissante réservée aux VIP.", "special", 0, None, None)
-        ]
-        cursor.executemany("INSERT INTO shop_items (item_key, name, price, description, shop_type, episode, required_role_id, role_to_give_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", default_items)
-
-    cursor.execute("DELETE FROM shop_items WHERE shop_type = 'episode'")
-    
-    # Génération automatique des items d'épisodes 1 à 25
-    episode_items = []
-    for ep in range(1, 26):
-        episode_items.extend([
-            (f"EP{ep}_1", f"Relique Alpha [0{ep:02d}]" if ep < 10 else f"Relique Alpha [{ep}]", 500, "Objet d'histoire essentiel.", "episode", ep, None, None),
-            (f"EP{ep}_2", f"Relique Bêta [0{ep:02d}]" if ep < 10 else f"Relique Bêta [{ep}]", 500, "Objet d'histoire essentiel.", "episode", ep, None, None),
-            (f"EP{ep}_3", f"Relique Gamma [0{ep:02d}]" if ep < 10 else f"Relique Gamma [{ep}]", 500, "Objet d'histoire essentiel.", "episode", ep, None, None),
-            (f"EP{ep}_4", f"Relique Delta [0{ep:02d}]" if ep < 10 else f"Relique Delta [{ep}]", 500, "Objet d'histoire essentiel.", "episode", ep, None, None),
-        ])
-    cursor.executemany("INSERT INTO shop_items (item_key, name, price, description, shop_type, episode, required_role_id, role_to_give_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", episode_items)
-    conn.commit()
-    conn.close()
-
-def shop_get_user(user_id: int):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT wallet, bank, last_daily, streak FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    if not row:
-        cursor.execute("INSERT INTO users (user_id, wallet, bank) VALUES (?, 0, 0)", (user_id,))
-        conn.commit()
-        cursor.execute("SELECT wallet, bank, last_daily, streak FROM users WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-    conn.close()
-    return int(row[0]), int(row[1]), int(row[2]), int(row[3])
-
-init_shop_db()
-
 def get_episode_title(ep_num: int) -> str:
     return EPISODE_TITLES.get(ep_num, f"Épisode {ep_num}")
-
-
 
 
 # --- SYSTÈME DE GUILLAUME LE TROUBADOUR (INTERFAÇAGE PAGINÉ) ---
@@ -4013,10 +3998,10 @@ class TroubadourPaginationView(ui.View):
     async def listen_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.member.id:
             return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
-        
+
         story_text = EPISODE_STORIES.get(self.current_ep, "« Une histoire mystérieuse... »")
         extra_txt = " (Offert à tous les voyageurs !)" if self.current_ep == 1 else " (Vous possédez déjà cet épisode dans vos archives permanentes.)"
-        
+
         embed = discord.Embed(
             title=f"📜 Récit de {get_episode_title(self.current_ep)}",
             description=f"{story_text}\n\n*✨ {extra_txt}*",
@@ -4028,7 +4013,7 @@ class TroubadourPaginationView(ui.View):
     async def give_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.member.id:
             return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
-        
+
         has_story = self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
         if not has_story:
             return await interaction.response.send_message("❌ Le troubadour se repose, revenez plus tard !", ephemeral=True)
@@ -4050,14 +4035,14 @@ class TroubadourPaginationView(ui.View):
 
         self.update_components()
         story_text = EPISODE_STORIES.get(self.current_ep, "« Une histoire mystérieuse... »")
-        
+
         embed = discord.Embed(
             title=f"📜 Récit de {get_episode_title(self.current_ep)}",
             description=f"{story_text}\n\n*✨ (Guillaume a pris vos reliques de l'épisode {prev_ep} et a sauvegardé cet épisode à vie dans vos archives !) *",
             color=discord.Color.gold()
         )
         embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
-        
+
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -4153,8 +4138,8 @@ class EpisodeShopView(ui.View):
         async def callback(interaction: discord.Interaction):
             if interaction.user.id != self.member.id:
                 return await interaction.response.send_message("❌ Ce n'est pas votre boutique !", ephemeral=True)
-            
-            wallet, _, _, _ = shop_get_user(self.member.id)
+
+            wallet = get_user(self.member.id)[0]
             if wallet < item_price:
                 return await interaction.response.send_message(f"❌ Solde insuffisant ! Il te manque {format_currency(item_price - wallet)}.", ephemeral=True)
 
@@ -4169,20 +4154,20 @@ class EpisodeShopView(ui.View):
             conn.close()
 
             new_view = EpisodeShopView(self.member, self.episode_num)
-            
+
             title = get_episode_title(self.episode_num)
             embed = discord.Embed(title=f"📜 {title}", color=discord.Color.dark_teal())
             embed.description = "Achète tous les objets de cet épisode !"
-            
+
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT name, price, description FROM shop_items WHERE shop_type='episode' AND episode=?", (self.episode_num,))
             items = cursor.fetchall()
             conn.close()
-                
+
             for n, p, desc in items:
                 embed.add_field(name=n, value=f"Prix : **{format_currency(p)}**\n*{desc}*", inline=False)
-            
+
             await interaction.response.edit_message(embed=embed, view=new_view)
             await interaction.followup.send(f"✅ Tu as acheté **{item_name}** pour {format_currency(item_price)} !", ephemeral=True)
         return callback
@@ -4190,23 +4175,23 @@ class EpisodeShopView(ui.View):
     async def next_episode_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.member.id:
             return await interaction.response.send_message("❌ Ce n'est pas votre boutique !", ephemeral=True)
-        
+
         next_ep = self.episode_num + 1
         new_view = EpisodeShopView(self.member, next_ep)
-        
+
         title = get_episode_title(next_ep)
         embed = discord.Embed(title=f"📜 {title}", color=discord.Color.dark_teal())
         embed.description = "Achète tous les objets de cet épisode !"
-        
+
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT name, price, description FROM shop_items WHERE shop_type='episode' AND episode=?", (next_ep,))
         items = cursor.fetchall()
         conn.close()
-            
+
         for n, p, desc in items:
             embed.add_field(name=n, value=f"Prix : **{format_currency(p)}**\n*{desc}*", inline=False)
-        
+
         await interaction.response.edit_message(embed=embed, view=new_view)
 
 # --- VUE POUR LA BOUTIQUE DYNAMIQUE CLASSIQUE ---
@@ -4242,7 +4227,7 @@ class DynamicShopView(ui.View):
         async def callback(interaction: discord.Interaction):
             if interaction.user.id != self.member.id:
                 return await interaction.response.send_message("❌ Ce n'est pas votre boutique !", ephemeral=True)
-            
+
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT name, price, role_to_give_id FROM shop_items WHERE item_key = ?", (item_key,))
@@ -4253,7 +4238,7 @@ class DynamicShopView(ui.View):
                 return await interaction.response.send_message("❌ Cet article n'existe plus.", ephemeral=True)
 
             item_name, item_price, role_to_give_id = item
-            wallet, _, _, _ = shop_get_user(self.member.id)
+            wallet = get_user(self.member.id)[0]
 
             if wallet < item_price:
                 return await interaction.response.send_message(f"❌ Solde insuffisant ! Il te manque {format_currency(item_price - wallet)}.", ephemeral=True)
@@ -4286,7 +4271,7 @@ class ShopDialogueView(ui.View):
     def __init__(self, member: discord.Member):
         super().__init__(timeout=120)
         self.member = member
-        
+
         has_special_access = False
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -4315,7 +4300,7 @@ class ShopDialogueView(ui.View):
     async def open_shop(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.member.id:
             return await interaction.response.send_message("❌ Ce n'est pas ton tour de parler au marchand !", ephemeral=True)
-        
+
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT name, price, description, required_role_id FROM shop_items WHERE shop_type = 'normal'")
@@ -4335,19 +4320,19 @@ class ShopDialogueView(ui.View):
     async def open_story_shop(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.member.id:
             return await interaction.response.send_message("❌ Ce n'est pas ton tour !", ephemeral=True)
-            
+
         current_ep = 1
         view = EpisodeShopView(interaction.user, current_ep)
         title = get_episode_title(current_ep)
         embed = discord.Embed(title=f"📜 {title}", color=discord.Color.dark_teal())
         embed.description = "Achète tous les objets de cet épisode !"
-        
+
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT name, price, description FROM shop_items WHERE shop_type='episode' AND episode=?", (current_ep,))
         items = cursor.fetchall()
         conn.close()
-            
+
         for name, price, desc in items:
             embed.add_field(name=name, value=f"Prix : **{format_currency(price)}**\n*{desc}*", inline=False)
 
@@ -4376,7 +4361,7 @@ class ShopDialogueView(ui.View):
     async def open_inventory(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.member.id:
             return await interaction.response.send_message("❌ Ce n'est pas ton tour de parler au marchand !", ephemeral=True)
-        
+
         user_id = interaction.user.id
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -4425,78 +4410,13 @@ class PersistentMerchantView(ui.View):
         view = ShopDialogueView(interaction.user)
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-@bot.tree.command(name="balance", description="Vérifie ton solde ou celui d'un autre utilisateur")
-async def balance(interaction: discord.Interaction, member: discord.Member = None):
-    target = member or interaction.user
-    wallet, bank, _, _ = shop_get_user(target.id)
-    embed = discord.Embed(title=f"Portefeuille de {target.display_name}", color=discord.Color.blurple())
-    embed.add_field(name="Portefeuille", value=format_currency(wallet), inline=True)
-    embed.add_field(name="Banque", value=format_currency(bank), inline=True)
-    embed.set_thumbnail(url=target.display_avatar.url)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="setup-marchand", description="[Admin] Installe le PNJ permanent dans le salon actuel")
-@commands.has_permissions(administrator=True)
-async def setup_marchand(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    embed = discord.Embed(
-        title="✨ Bienvenue au Salon du Shop !",
-        description=(
-            "🦊 **Tom le Marchand** est installé ici en permanence.\n\n"
-            "👉 **Clique sur le bouton ci-dessous** pour engager la discussion avec lui !"
-        ),
-        color=discord.Color.gold()
-    )
-    embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
-    view = PersistentMerchantView()
-    await interaction.channel.send(embed=embed, view=view)
-    await interaction.followup.send("✅ Le PNJ marchand a été installé avec succès dans ce salon !", ephemeral=True)
-
-@setup_marchand.error
-async def setup_marchand_error(interaction: discord.Interaction, error):
-    if isinstance(error, discord.app_commands.MissingPermissions):
-        if not interaction.response.is_done():
-            await interaction.response.send_message("❌ Permission refusée.", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Permission refusée.", ephemeral=True)
-    else:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(f"❌ Erreur : {error}", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
-
-@bot.tree.command(name="setup-troubadour", description="[Admin] Installe Guillaume le Troubadour permanent dans le salon actuel")
-@commands.has_permissions(administrator=True)
-async def setup_troubadour(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    embed = discord.Embed(
-        title="🪕 Guillaume le Troubadour",
-        description=(
-            "✨ **Guillaume** est arrivé pour conter les épopées de vos voyages.\n\n"
-            "👉 **Clique sur le bouton ci-dessous** pour lui parler et lui donner vos reliques d'épisodes !"
-        ),
-        color=discord.Color.purple()
-    )
-    embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
-    view = PersistentTroubadourView()
-    await interaction.channel.send(embed=embed, view=view)
-    await interaction.followup.send("✅ Guillaume le Troubadour a été installé avec succès dans ce salon !", ephemeral=True)
-
-@setup_troubadour.error
-async def setup_troubadour_error(interaction: discord.Interaction, error):
-    if isinstance(error, discord.app_commands.MissingPermissions):
-        if not interaction.response.is_done():
-            await interaction.response.send_message("❌ Permission refusée.", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Permission refusée.", ephemeral=True)
-    else:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(f"❌ Erreur : {error}", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
+# ==========================================
+# 8. COMMANDES ADMIN DE GESTION D'HISTOIRE / BOUTIQUE
+# ==========================================
 
 @bot.tree.command(name="reset-story", description="[Admin] Réinitialise la progression des histoires et supprime les reliques des inventaires")
-@commands.has_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
 async def reset_story(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     conn = get_db_connection()
@@ -4508,18 +4428,6 @@ async def reset_story(interaction: discord.Interaction):
 
     await interaction.followup.send("🔄 **Réinitialisation réussie !** Toutes les histoires validées et les reliques d'épisodes ont été remises à zéro pour les tests.", ephemeral=True)
 
-@reset_story.error
-async def reset_story_error(interaction: discord.Interaction, error):
-    if isinstance(error, discord.app_commands.MissingPermissions):
-        if not interaction.response.is_done():
-            await interaction.response.send_message("❌ Permission refusée.", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Permission refusée.", ephemeral=True)
-    else:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(f"❌ Erreur : {error}", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
 
 @bot.tree.command(name="inventory", description="Affiche ton inventaire d'achats")
 async def inventory(interaction: discord.Interaction):
@@ -4538,8 +4446,9 @@ async def inventory(interaction: discord.Interaction):
         embed.description = "\n".join(description)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+
 @bot.tree.command(name="shop_add", description="[Admin] Ajoute un article normal, spécial ou épisode")
-@commands.has_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
 async def shop_add(
     interaction: discord.Interaction, 
     item_key: str, 
@@ -4570,21 +4479,9 @@ async def shop_add(
     ep_txt = f" (Épisode {episode})" if shop_type == "episode" else ""
     await interaction.followup.send(f"✅ L'article **{name}** a été ajouté au shop **{shop_type}**{ep_txt} avec succès !", ephemeral=True)
 
-@shop_add.error
-async def shop_add_error(interaction: discord.Interaction, error):
-    if isinstance(error, discord.app_commands.MissingPermissions):
-        if not interaction.response.is_done():
-            await interaction.response.send_message("❌ Permission refusée.", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Permission refusée.", ephemeral=True)
-    else:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(f"❌ Erreur : {error}", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
 
 @bot.tree.command(name="shop_remove", description="[Admin] Supprime un article de la boutique")
-@commands.has_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
 async def shop_remove(interaction: discord.Interaction, item_key: str):
     await interaction.response.defer(ephemeral=True)
     conn = get_db_connection()
@@ -4599,66 +4496,138 @@ async def shop_remove(interaction: discord.Interaction, item_key: str):
     else:
         await interaction.followup.send(f"❌ Aucun article trouvé avec la clé `{item_key}`.", ephemeral=True)
 
-@shop_remove.error
-async def shop_remove_error(interaction: discord.Interaction, error):
-    if isinstance(error, discord.app_commands.MissingPermissions):
-        if not interaction.response.is_done():
-            await interaction.response.send_message("❌ Permission refusée.", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Permission refusée.", ephemeral=True)
+
+# ==========================================
+# GESTION GLOBALE DES ERREURS DE COMMANDES SLASH
+# ==========================================
+
+async def _global_app_command_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError
+):
+    original_error = getattr(error, "original", error)
+
+    print(
+        f"❌ ERREUR COMMANDE SLASH | "
+        f"Utilisateur={getattr(interaction.user, 'id', 'inconnu')} | "
+        f"Commande={getattr(interaction.command, 'name', 'inconnue')} | "
+        f"{type(original_error).__name__}: {original_error}"
+    )
+    traceback.print_exception(
+        type(original_error),
+        original_error,
+        original_error.__traceback__,
+    )
+
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        message = "❌ Tu n'as pas les permissions nécessaires pour utiliser cette commande."
+    elif isinstance(error, app_commands.errors.CheckFailure):
+        message = "❌ Tu n'es pas autorisé à utiliser cette commande."
     else:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(f"❌ Erreur : {error}", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Erreur : {error}", ephemeral=True)
+        message = (
+            f"❌ Une erreur est survenue avec cette commande : "
+            f"`{type(original_error).__name__}`"
+        )
 
-
-
-# --- Intégration de l'ancien on_ready de ShopIV ---
-async def shop_on_ready():
-    init_shop_db()
-    bot.add_view(PersistentMerchantView())
-    bot.add_view(PersistentTroubadourView())
-    print(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
     try:
-        synced = await bot.tree.sync()
-        print(f"Synchronisé {len(synced)} commandes slash.")
-    except Exception as e:
-        print(e)
-    print("Prêt !")
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except Exception as send_error:
+        print(
+            f"❌ Impossible d'envoyer le message d'erreur : "
+            f"{type(send_error).__name__}: {send_error}"
+        )
+
+# CommandTree utilise ce gestionnaire pour les erreurs qui surviennent
+# pendant l'exécution des commandes slash.
+bot.tree.on_error = _global_app_command_error
+
 
 # ==========================================
-# 10. LANCEMENT DU BOT & SERVEUR WEB RAILWAY
+# INITIALISATION UNIQUE DU BOT
 # ==========================================
-
-async def handle(request):
-    return web.Response(text="Bot actif !")
-
-async def web_server():
-    app = web.Application()
-    app.add_routes([web.get('/', handle)])
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', int(os.getenv("PORT", 8080)))
-    await site.start()
 
 @bot.event
 async def on_ready():
-    print(f"🤖 Bot connecté en tant que bot (ID: {bot.user.id})")
-    try:
-        synced = await bot.tree.sync()
-        print(f"🌲 {len(synced)} commandes slash synchronisées.")
-    except Exception as e:
-        print(f"❌ Erreur lors de la synchronisation des commandes : {e}")
+    print(f"🤖 Bot connecté en tant que {bot.user} (ID: {bot.user.id})")
 
-    # Initialisation des systèmes fusionnés de ShopIV
+    # ------------------------------------------
+    # BASE DE DONNÉES
+    # ------------------------------------------
     try:
-        await shop_on_ready()
+        init_db()
+        print("💾 Base économique /data/economy.db : OK")
     except Exception as e:
-        print(f"❌ Erreur lors de l'initialisation ShopIV : {e}")
+        print(f"❌ ERREUR INIT BASE DE DONNÉES : {type(e).__name__}: {e}")
+        traceback.print_exc()
 
+    # ------------------------------------------
+    # VUES PERSISTANTES
+    # ------------------------------------------
+    if not getattr(bot, "_persistent_views_registered", False):
+        try:
+            bot.add_view(PersistentMerchantView())
+            bot.add_view(PersistentTroubadourView())
+            bot._persistent_views_registered = True
+            print("🦊 Vue persistante du Marchand : OK")
+            print("🪕 Vue persistante de Guillaume : OK")
+        except Exception as e:
+            print(f"❌ ERREUR VUES PERSISTANTES : {type(e).__name__}: {e}")
+            traceback.print_exc()
+
+    # ------------------------------------------
+    # SYNC DES COMMANDES SLASH - ATTENTE POUR ÉVITER LES RATE LIMITS
+    # ------------------------------------------
+    try:
+        # Petit délai pour éviter les rate limits
+        await asyncio.sleep(2)
+
+        # Synchronisation globale
+        synced_global = await bot.tree.sync()
+        print(f"🌲 {len(synced_global)} commandes slash synchronisées globalement.")
+
+        # Synchronisation par serveur
+        for guild in bot.guilds:
+            try:
+                bot.tree.copy_global_to(guild=guild)
+                synced_guild = await bot.tree.sync(guild=guild)
+                print(
+                    f"🏰 Serveur '{guild.name}' ({guild.id}) : "
+                    f"{len(synced_guild)} commandes synchronisées."
+                )
+            except Exception as e:
+                print(
+                    f"❌ ERREUR SYNCHRO SERVEUR '{guild.name}' ({guild.id}) : "
+                    f"{type(e).__name__}: {e}"
+                )
+                traceback.print_exc()
+    except Exception as e:
+        print(f"❌ ERREUR SYNCHRONISATION : {type(e).__name__}: {e}")
+        traceback.print_exc()
+
+    # ------------------------------------------
+    # LISTE DES COMMANDES DISPONIBLES
+    # ------------------------------------------
+    try:
+        commands_list = [cmd.name for cmd in bot.tree.get_commands()]
+        print(f"📋 Commandes disponibles : {', '.join(commands_list)}")
+    except Exception as e:
+        print(f"❌ ERREUR LISTE COMMANDES : {e}")
+
+    print("✅ Initialisation terminée : le bot est prêt à recevoir les commandes.")
+
+
+# ==========================================
+# 10. LANCEMENT DU BOT
+# ==========================================
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(web_server())
+    if not TOKEN:
+        raise RuntimeError(
+            "Token Discord introuvable. Ajoute une variable d'environnement "
+            "DISCORD_TOKEN (ou DISCORD_BOT_TOKEN/BOT_TOKEN/TOKEN) dans ton hébergeur. "
+            "Ne mets pas le token directement dans le code."
+        )
     bot.run(TOKEN)
