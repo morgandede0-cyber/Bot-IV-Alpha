@@ -140,7 +140,6 @@ def init_db():
             )
         """)
 
-        # --- TABLE POUR L'HISTOIRE (Guillaume le Troubadour) ---
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='story_progress'")
         story_table_exists = cursor.fetchone() is not None
 
@@ -237,7 +236,6 @@ def init_db():
             episode_items,
         )
 
-        # AJOUT : Table pour mémoriser le dernier chapitre
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_last_chapter (
                 user_id INTEGER PRIMARY KEY,
@@ -264,7 +262,6 @@ def init_db():
 
 
 def get_user_last_chapter(user_id: int):
-    """Récupère le dernier chapitre mémorisé pour un utilisateur"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT last_episode, last_shop_episode FROM user_last_chapter WHERE user_id = ?", (user_id,))
@@ -275,7 +272,6 @@ def get_user_last_chapter(user_id: int):
 
 
 def update_user_last_chapter(user_id: int, last_episode: int = None, last_shop_episode: int = None):
-    """Met à jour le dernier chapitre mémorisé"""
     current_ep, current_shop = get_user_last_chapter(user_id)
     if last_episode is None:
         last_episode = current_ep
@@ -1137,10 +1133,9 @@ class BrookPMUBetModal(ui.Modal, title="📜 Brook - Montant de la mise"):
 
 
 # ==========================================
-# 5.1. SYSTÈMES DE DUEL ENTRE JOUEURS (JIM ET BOB)
+# 5.1. SYSTÈMES DE DUEL ENTRE JOUEURS
 # ==========================================
 
-# Messages de moquerie pour les duels refusés
 DUEL_REFUSED_MESSAGES = [
     "😱 **{opponent}** a eu la trouille et s'est caché sous la table ! {challenger} reste sans adversaire...",
     "🫣 **{opponent}** a préféré sauver sa peau plutôt que d'affronter {challenger} ! Quel couard !",
@@ -1149,54 +1144,10 @@ DUEL_REFUSED_MESSAGES = [
     "💀 **{opponent}** a réalisé qu'il allait perdre et a préféré faire semblant de ne pas voir le défi !",
     "🐔 **{opponent}** a picoré et s'est envolé ! {challenger} reste avec sa fierté intacte.",
     "😤 **{opponent}** a décliné le duel, trop occupé à compter ses sous dans son coin !",
-    "🤣 **{opponent}** a eu la pétoche et s'est planqué derrière le comptoir !"
+    "🤣 **{opponent}** a eu la pétoche et s'est planqué derrière le comptoir !",
+    "🦆 **{opponent}** a fait le canard et s'est couvert les yeux ! {challenger} attend toujours un vrai guerrier !",
+    "🏃‍♂️ **{opponent}** a pris ses jambes à son cou, visiblement il n'était pas prêt pour ce combat !"
 ]
-
-class DuelTimerManager:
-    """Gère les timers de duel avec annulation automatique"""
-    _active_duels = {}
-    
-    @classmethod
-    async def start_duel_timer(cls, interaction: discord.Interaction, challenger: discord.Member, opponent: discord.Member, view: ui.View, timeout: int = 30):
-        duel_key = f"{challenger.id}_{opponent.id}"
-        cls._active_duels[duel_key] = {
-            "interaction": interaction,
-            "challenger": challenger,
-            "opponent": opponent,
-            "view": view,
-            "timeout": timeout
-        }
-        
-        await asyncio.sleep(timeout)
-        
-        # Vérifier si le duel est toujours actif
-        if duel_key in cls._active_duels:
-            # Le duel a expiré
-            duel_data = cls._active_duels.pop(duel_key)
-            
-            # Désactiver les boutons
-            for child in duel_data["view"].children:
-                child.disabled = True
-            
-            # Message de moquerie aléatoire
-            mock_message = random.choice(DUEL_REFUSED_MESSAGES).format(
-                opponent=duel_data["opponent"].mention,
-                challenger=duel_data["challenger"].mention
-            )
-            
-            embed = discord.Embed(
-                title="⏰ DUEL EXPIRÉ",
-                description=f"{mock_message}\n\nLe duel a été automatiquement annulé.",
-                color=discord.Color.dark_red()
-            )
-            
-            try:
-                await duel_data["interaction"].edit_original_response(embed=embed, view=duel_data["view"])
-                await send_public_log(
-                    content=f"⏰ **{duel_data['challenger'].display_name}** a défié {duel_data['opponent'].display_name} mais celui-ci n'a pas répondu à temps ! (30s)"
-                )
-            except Exception as e:
-                print(f"❌ Erreur expiration duel : {e}")
 
 class DuelPFCView(ui.View):
     def __init__(self, challenger: discord.Member, opponent: discord.Member, bet: int):
@@ -1344,28 +1295,23 @@ class DuelDiceView(ui.View):
 
 
 class DuelAcceptView(ui.View):
-    def __init__(self, challenger: discord.Member, opponent: discord.Member, game_type: str, bet: int, from_jim: bool = True):
+    def __init__(self, challenger: discord.Member, opponent: discord.Member, game_type: str, bet: int, from_jim: bool = True, interaction_ref: discord.Interaction = None):
         super().__init__(timeout=30)
         self.challenger = challenger
         self.opponent = opponent
         self.game_type = game_type
         self.bet = bet
         self.from_jim = from_jim
-        self._timer_started = False
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.opponent.id:
-            await interaction.response.send_message("❌ Ce n'est pas à vous d'accepter ce duel !", ephemeral=True)
-            return False
-        return True
+        self.interaction_ref = interaction_ref
+        self.responded = False
 
     async def on_timeout(self):
-        """Quand le timer de 30s est écoulé"""
-        # Désactiver les boutons
+        if self.responded:
+            return
+        
         for child in self.children:
             child.disabled = True
         
-        # Message de moquerie aléatoire
         mock_message = random.choice(DUEL_REFUSED_MESSAGES).format(
             opponent=self.opponent.mention,
             challenger=self.challenger.mention
@@ -1379,7 +1325,9 @@ class DuelAcceptView(ui.View):
         )
         
         try:
-            await self.message.edit(embed=embed, view=self)
+            if self.interaction_ref:
+                await self.interaction_ref.edit_original_response(embed=embed, view=self)
+            
             await send_public_log(
                 content=f"⏰ **{self.challenger.display_name}** a défié {self.opponent.display_name} mais celui-ci n'a pas répondu à temps ! (30s) 🐔"
             )
@@ -1388,6 +1336,7 @@ class DuelAcceptView(ui.View):
 
     @ui.button(label="Accepter le Duel", style=discord.ButtonStyle.success, emoji="✅")
     async def accept(self, interaction: discord.Interaction, button: ui.Button):
+        self.responded = True
         wallet_opp, _, _, _, _, _, _, _, _ = get_user(self.opponent.id)
         wallet_chal, _, _, _, _, _, _, _, _ = get_user(self.challenger.id)
 
@@ -1426,6 +1375,7 @@ class DuelAcceptView(ui.View):
 
     @ui.button(label="Refuser", style=discord.ButtonStyle.danger, emoji="❌")
     async def decline(self, interaction: discord.Interaction, button: ui.Button):
+        self.responded = True
         for child in self.children:
             child.disabled = True
         embed = discord.Embed(
@@ -1643,8 +1593,9 @@ class TavernDuelBetModal(ui.Modal, title="⚔️ Tavernier - Configuration du Du
             return await interaction.followup.send(f"❌ {self.opponent.mention} n'a pas assez d'argent dans son portefeuille pour accepter cette mise.", ephemeral=True)
 
         game_name = "Dés du Destin" if self.game_type == "dice" else "Pierre-Feuille-Ciseaux"
-        view = DuelAcceptView(interaction.user, self.opponent, self.game_type, bet, from_jim=True)
+        view = DuelAcceptView(interaction.user, self.opponent, self.game_type, bet, from_jim=True, interaction_ref=interaction)
         
+        # Envoi PRIVÉ dans le salon A (ephemeral=False car c'est un message visible mais avec mention)
         embed = discord.Embed(
             title="⚔️ DÉFI DE DUEL (TAVERNE)",
             description=(
@@ -1657,6 +1608,11 @@ class TavernDuelBetModal(ui.Modal, title="⚔️ Tavernier - Configuration du Du
         )
         msg = await interaction.followup.send(content=self.opponent.mention, embed=embed, view=view)
         view.message = msg
+        
+        # Envoi PUBLIC dans le salon B
+        await send_public_log(
+            content=f"⚔️ **{interaction.user.display_name}** a défié **{self.opponent.display_name}** à un duel de **{game_name}** à la taverne ! Mise : **{format_currency(bet)}**"
+        )
 
 
 class TavernDuelSelect(ui.UserSelect):
@@ -2208,7 +2164,7 @@ class ArenaDuelBetModal(ui.Modal, title="⚔️ Arène - Mise du Duel"):
         if wallet_opp < bet:
             return await interaction.followup.send(f"❌ {self.opponent.mention} n'a pas assez d'argent dans son portefeuille pour accepter ce duel.", ephemeral=True)
 
-        view = DuelAcceptView(interaction.user, self.opponent, "dice", bet, from_jim=False)
+        view = DuelAcceptView(interaction.user, self.opponent, "dice", bet, from_jim=False, interaction_ref=interaction)
         
         embed = discord.Embed(
             title="⚔️ DÉFI DE L'ARÈNE",
@@ -2222,6 +2178,11 @@ class ArenaDuelBetModal(ui.Modal, title="⚔️ Arène - Mise du Duel"):
         )
         msg = await interaction.followup.send(content=self.opponent.mention, embed=embed, view=view)
         view.message = msg
+        
+        # Envoi PUBLIC dans le salon B
+        await send_public_log(
+            content=f"⚔️ **{interaction.user.display_name}** a défié **{self.opponent.display_name}** à un duel dans l'arène de Bob ! Mise : **{format_currency(bet)}**"
+        )
 
 
 # ==========================================
@@ -2340,18 +2301,18 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
     piste_len = 10
     positions = {1: 0, 2: 0, 3: 0, 4: 0}
 
-    # Envoyer UN SEUL message initial avec les boutons CONSERVÉS
     initial_piste = "🏁 **Brook - Départ de la course PMU !** Les chevaux s'élancent...\n```text\n┌── HIPPODROME ────────┐\n"
     for cid, data in chevaux.items():
         initial_piste += f"│#{cid}[{data['emoji']}{'-'*piste_len}]│\n"
     initial_piste += "└──────────────────────┘\n```"
 
+    # Envoyer UN SEUL message initial
     await interaction.followup.send(initial_piste, ephemeral=True)
     anim_manager = AnimatedMessageManager(interaction, show_animation=show_anim)
 
     weights = [round(10 / dynamic_odds[i], 2) for i in range(1, 5)]
 
-    # Animation : on met à jour le MÊME message
+    # Animation
     while max(positions.values()) < piste_len:
         await asyncio.sleep(1.0)
         for c in positions:
@@ -2368,7 +2329,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         piste_str += "└──────────────────────┘\n```"
         await anim_manager.update_animation(new_content=piste_str)
 
-    # Résultat final - on met à jour le MÊME message
+    # Résultat final
     max_p = max(positions.values())
     gagnants = [c for c, p in positions.items() if p >= max_p]
 
@@ -2402,7 +2363,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         final_piste += f"│#{cid}[{ligne}]│\n"
     final_piste += f"└──────────────────────┘\n```\n{res_msg}"
 
-    # Met à jour le message original avec le résultat final
+    # Mettre à jour le message original
     if not show_anim:
         try:
             await interaction.edit_original_response(content=final_piste)
@@ -2411,7 +2372,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
     else:
         await anim_manager.update_animation(new_content=final_piste)
 
-    # Met à jour les cotes du panneau Brook (avec les boutons qui restent)
+    # Mettre à jour les cotes du panneau Brook (les boutons RESTENT)
     new_odds = generate_brook_odds()
     file_brook = discord.File("assets/brook.png", filename="brook.png") if os.path.exists("assets/brook.png") else None
     new_embed = discord.Embed(
@@ -2524,7 +2485,7 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, game:
         return await interaction.followup.send(f"❌ {opponent.mention} n'a pas assez d'argent dans son portefeuille pour accepter cette mise.", ephemeral=True)
 
     game_name = "Dés du Destin" if game == "dice" else "Pierre-Feuille-Ciseaux"
-    view = DuelAcceptView(interaction.user, opponent, game, bet, from_jim=True)
+    view = DuelAcceptView(interaction.user, opponent, game, bet, from_jim=True, interaction_ref=interaction)
 
     embed = discord.Embed(
         title="⚔️ DÉFI DE DUEL",
@@ -2538,6 +2499,11 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, game:
     )
     msg = await interaction.followup.send(content=opponent.mention, embed=embed, view=view)
     view.message = msg
+    
+    # Envoi PUBLIC dans le salon B
+    await send_public_log(
+        content=f"⚔️ **{interaction.user.display_name}** a défié **{opponent.display_name}** à un duel de **{game_name}** ! Mise : **{format_currency(bet)}**"
+    )
 
 
 @bot.tree.command(name="pmu", description="Parie sur une course de chevaux rapide (PMU)")
@@ -4145,13 +4111,11 @@ class EpisodeShopView(ui.View):
         super().__init__(timeout=120)
         self.member = member
         
-        # Récupérer le dernier chapitre mémorisé
         _, last_shop = get_user_last_chapter(member.id)
         if episode_num is None:
             episode_num = last_shop if last_shop else 1
         self.episode_num = episode_num
         
-        # Sauvegarder le chapitre actuel
         update_user_last_chapter(member.id, last_shop_episode=episode_num)
         self.load_items()
 
@@ -4236,7 +4200,6 @@ class EpisodeShopView(ui.View):
             return await interaction.response.send_message("❌ Ce n'est pas votre boutique !", ephemeral=True)
 
         next_ep = self.episode_num + 1
-        # Sauvegarder le nouveau chapitre
         update_user_last_chapter(self.member.id, last_shop_episode=next_ep)
         new_view = EpisodeShopView(self.member, next_ep)
 
@@ -4490,7 +4453,6 @@ class PersistentTroubadourView(ui.View):
         if not isinstance(interaction.user, discord.Member):
             return await interaction.followup.send("❌ Erreur.", ephemeral=True)
 
-        # Récupérer le dernier chapitre mémorisé pour Guillaume
         last_ep, _ = get_user_last_chapter(interaction.user.id)
         view = TroubadourPaginationView(interaction.user, current_ep=last_ep if last_ep else 1)
         await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
@@ -4569,7 +4531,6 @@ class TroubadourPaginationView(ui.View):
             return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
         if self.current_ep > 1:
             self.current_ep -= 1
-            # Sauvegarder le nouveau chapitre
             update_user_last_chapter(self.member.id, last_episode=self.current_ep)
             self.update_components()
             await interaction.response.edit_message(embed=self.build_embed(), view=self)
@@ -4579,7 +4540,6 @@ class TroubadourPaginationView(ui.View):
             return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
         if self.current_ep < TOTAL_EPISODES:
             self.current_ep += 1
-            # Sauvegarder le nouveau chapitre
             update_user_last_chapter(self.member.id, last_episode=self.current_ep)
             self.update_components()
             await interaction.response.edit_message(embed=self.build_embed(), view=self)
@@ -4622,13 +4582,11 @@ class TroubadourPaginationView(ui.View):
         conn.commit()
         conn.close()
 
-        # Sauvegarder le dernier chapitre débloqué
         update_user_last_chapter(self.member.id, last_episode=self.current_ep)
 
         self.update_components()
         story_text = EPISODE_STORIES.get(self.current_ep, "« Une histoire mystérieuse... »")
 
-        # Envoyer un message dans le salon B
         await send_public_log(
             content=f"📜 **{self.member.display_name}** a débloqué le chapitre **{self.current_ep}** de l'histoire de Guillaume le Troubadour !"
         )
