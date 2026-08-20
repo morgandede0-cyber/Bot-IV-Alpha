@@ -39,6 +39,21 @@ cooldowns = {}
 # Mode test global pour les cooldowns
 TEST_MODE_ENABLED = False
 
+# ==========================================
+# SALON DE LOGS PUBLIC (SALON B)
+# ==========================================
+
+PUBLIC_LOG_CHANNEL_ID = 1540068629389910087  # Salon "taverne"
+
+async def send_public_log(content: str = None, embed: discord.Embed = None, file: discord.File = None):
+    """Envoie un message public dans le salon de logs (Salon B)"""
+    if PUBLIC_LOG_CHANNEL_ID:
+        channel = bot.get_channel(PUBLIC_LOG_CHANNEL_ID)
+        if channel:
+            try:
+                await channel.send(content=content, embed=embed, file=file)
+            except Exception as e:
+                print(f"❌ Erreur envoi log public : {e}")
 
 # ==========================================
 # 2. GESTIONNAIRE D'ANIMATION DE MESSAGE
@@ -589,7 +604,7 @@ async def load_achievements_from_github():
     """Charge la liste des succès depuis le fichier JSON sur GitHub"""
     global ACHIEVEMENTS_DEFS, ACHIEVEMENTS_LOADED
     
-    # Fallback local MINIMAL en cas d'échec (seulement 1 succès pour tester)
+    # Fallback local MINIMAL en cas d'échec
     FALLBACK_ACHIEVEMENTS = {
         "games_master": {
             "title": "Maître des Jeux",
@@ -1346,6 +1361,11 @@ class DepositModal(ui.Modal, title="📥 DAB - Dépôt de billets"):
             update_quest_progress(interaction.user.id, "bank_deposit", 1)
             await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
 
+            # ENVOI PUBLIC DANS LE SALON B (Dépôt)
+            await send_public_log(
+                content=f"💵 **{interaction.user.display_name}** a déposé **{format_currency(val)}** à la banque !"
+            )
+
             await interaction.followup.send(
                 f"💵 **[DÉPÔT EFFECTUÉ]** +{format_currency(val)} ont été insérés sur"
                 " votre compte.",
@@ -1388,6 +1408,7 @@ class WithdrawModal(ui.Modal, title="📤 DAB - Retrait de billets"):
 
             await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
 
+            # PAS DE LOG PUBLIC POUR LES RETRAITS (uniquement les dépôts)
             await interaction.followup.send(
                 f"💸 **[BILLETS DISTRIBUÉS]** Veuillez récupérer vos"
                 f" {format_currency(val)}.",
@@ -1631,6 +1652,11 @@ class JimTavernView(ui.View):
 
         await check_and_unlock_achievements(user_id, bot_client=bot)
 
+        # ENVOI PUBLIC DANS LE SALON B
+        await send_public_log(
+            content=f"🍺 **{interaction.user.display_name}** a commandé une pinte chez Jim ! (#{beers_today}/5) {outcome}"
+        )
+
         await interaction.followup.send(f"🪵 **[JIM LE TAVERNIER]** (Pinte #{beers_today}/5) {outcome}", ephemeral=True)
 
     @ui.button(label="Jeux de la Taverne", style=discord.ButtonStyle.success, emoji="🎲", custom_id="jim_games")
@@ -1685,6 +1711,12 @@ class JohnRobSelect(ui.UserSelect):
             update_wallet(victim.id, -stolen)
             update_wallet(user_id, stolen)
             await check_and_unlock_achievements(user_id, bot_client=bot)
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"🥷 **{interaction.user.display_name}** a volé **{format_currency(stolen)}** à {victim.display_name} !"
+            )
+            
             await interaction.followup.send(f"🥷 **[JOHN LE BRIGAND]** Bien joué ! Tu as volé **{format_currency(stolen)}** à {victim.mention} !", ephemeral=True)
         else:
             fine = min(200, thief_wallet)
@@ -1719,6 +1751,12 @@ class BrinksVaultModal(ui.Modal, title="🔒 Coffre de la Brinks - Code à 4 chi
         if user_input == self.secret_code:
             update_wallet(user_id, self.prize)
             await check_and_unlock_achievements(user_id, bot_client=bot)
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"🔐 **{interaction.user.display_name}** a réussi le braquage de la Brinks ! Il a empoché **{format_currency(self.prize)}** !"
+            )
+            
             embed = discord.Embed(
                 title="🔐 [BRINKS] COFFRE OUVERT !",
                 description=f"🎉 Incroyable ! Tu as trouvé la bonne combinaison **{self.secret_code}** !\nTu récupères le butin de **{format_currency(self.prize)}** !",
@@ -1803,6 +1841,12 @@ class JohnCrimeView(ui.View):
             gain = random.randint(300, 1000)
             update_wallet(user_id, gain)
             await check_and_unlock_achievements(user_id, bot_client=bot)
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"🥷 **{interaction.user.display_name}** a réussi un crime et a gagné **{format_currency(gain)}** !"
+            )
+            
             await interaction.followup.send(f"🥷 **[JOHN LE BRIGAND]** Joli coup ! Vol réussi. +**{format_currency(gain)}**", ephemeral=True)
         else:
             loss = min(random.randint(100, 400), wallet)
@@ -1903,6 +1947,12 @@ class ArenaFightView(ui.View):
             update_wallet(self.user_id, gain - self.bet)
             update_game_stats(self.user_id, won=True)
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"⚔️ **{interaction.user.display_name}** a vaincu Bob dans l'arène et remporte **{format_currency(gain)}** !"
+            )
+            
             embed = self.build_embed(f"{p_text}\n\n🏆 **VICTOIRE !** Bob s'agenouille, vaincu par votre bravoure ! +**{format_currency(gain)}**", color=discord.Color.green())
             return await interaction.response.edit_message(embed=embed, view=self)
 
@@ -1924,6 +1974,12 @@ class ArenaFightView(ui.View):
                 child.disabled = True
             update_wallet(self.user_id, -self.bet)
             update_game_stats(self.user_id, won=False)
+            
+            # ENVOI PUBLIC DANS LE SALON B (défaite)
+            await send_public_log(
+                content=f"💀 **{interaction.user.display_name}** a été vaincu par Bob dans l'arène ! (-{format_currency(self.bet)})"
+            )
+            
             embed = self.build_embed(f"{p_text}\n{b_text}\n\n💀 **DÉFAITE !** Bob vous terrasse d'un ultime coup de taille. -**{format_currency(self.bet)}**", color=discord.Color.dark_red())
             return await interaction.response.edit_message(embed=embed, view=self)
 
@@ -2178,6 +2234,12 @@ class ArenaPvPView(ui.View):
                 update_game_stats(self.challenger.id, won=True)
                 update_game_stats(self.opponent.id, won=False)
                 await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
+                
+                # ENVOI PUBLIC DANS LE SALON B
+                await send_public_log(
+                    content=f"⚔️ **{self.challenger.display_name}** a remporté un duel PvP contre {self.opponent.display_name} et gagne **{format_currency(self.bet)}** !"
+                )
+                
                 res_text = f"\n\n🏆 **VICTOIRE de {self.challenger.mention} !** Il remporte **{format_currency(self.bet)}**."
                 color = discord.Color.green()
             else:
@@ -2186,6 +2248,12 @@ class ArenaPvPView(ui.View):
                 update_game_stats(self.opponent.id, won=True)
                 update_game_stats(self.opponent.id, won=False)
                 await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
+                
+                # ENVOI PUBLIC DANS LE SALON B
+                await send_public_log(
+                    content=f"⚔️ **{self.opponent.display_name}** a remporté un duel PvP contre {self.challenger.display_name} et gagne **{format_currency(self.bet)}** !"
+                )
+                
                 res_text = f"\n\n🏆 **VICTOIRE de {self.opponent.mention} !** Il remporte **{format_currency(self.bet)}**."
                 color = discord.Color.green()
 
@@ -2266,10 +2334,20 @@ async def run_pmu_game(interaction: discord.Interaction, cheval: int, bet: int):
         update_game_stats(interaction.user.id, won=True)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         res_msg = f"🏆 **[PMU] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! Ton pari sur **{chevaux[cheval]['nom']}** (cote x{cote}) passe haut la main ! +**{format_currency(gain)}**"
+        
+        # ENVOI PUBLIC DANS LE SALON B
+        await send_public_log(
+            content=f"🏇 **{interaction.user.display_name}** a gagné un pari PMU sur **{chevaux[cheval]['nom']}** (x{cote}) et remporte **{format_currency(gain)}** !"
+        )
     else:
         update_wallet(interaction.user.id, -bet)
         update_game_stats(interaction.user.id, won=False)
         res_msg = f"❌ **[PMU] PERDU !** C'est #{gagnant} ({chevaux[gagnant]['nom']}) qui a gagné. Ton pari sur **{chevaux[cheval]['nom']}** (cote x{cote}) est perdant. -**{format_currency(bet)}**"
+        
+        # ENVOI PUBLIC DANS LE SALON B
+        await send_public_log(
+            content=f"🏇 **{interaction.user.display_name}** a perdu un pari PMU sur **{chevaux[cheval]['nom']}** (x{cote}). Perte : **{format_currency(bet)}**"
+        )
 
     final_piste = "🏁 **PMU - Arrivée de la course !**\n```text\n┌── HIPPODROME ────────┐\n"
     for cid, data in chevaux.items():
@@ -2356,10 +2434,20 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         update_game_stats(interaction.user.id, won=True)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         res_msg = f"🏆 **[BROOK LA BOOKMAKEUSE] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! Ton pari sur **{chevaux[horse_choice]['nom']}** (cote x{cote}) passe haut la main ! +**{format_currency(gain)}**"
+        
+        # ENVOI PUBLIC DANS LE SALON B
+        await send_public_log(
+            content=f"🏇 **{interaction.user.display_name}** a gagné un pari Brook sur **{chevaux[horse_choice]['nom']}** (x{cote}) et remporte **{format_currency(gain)}** !"
+        )
     else:
         update_wallet(interaction.user.id, -bet)
         update_game_stats(interaction.user.id, won=False)
         res_msg = f"❌ **[BROOK LA BOOKMAKEUSE] PERDU !** C'est #{gagnant} ({chevaux[gagnant]['nom']}) qui a gagné. Ton pari sur **{chevaux[horse_choice]['nom']}** (cote x{cote}) est perdant. -**{format_currency(bet)}**"
+        
+        # ENVOI PUBLIC DANS LE SALON B
+        await send_public_log(
+            content=f"🏇 **{interaction.user.display_name}** a perdu un pari Brook sur **{chevaux[horse_choice]['nom']}** (x{cote}). Perte : **{format_currency(bet)}**"
+        )
 
     final_piste = f"🏁 **Brook - Arrivée de la course PMU !**\n```text\n┌── HIPPODROME ────────┐\n"
     for cid, data in chevaux.items():
@@ -2873,6 +2961,11 @@ async def work(interaction: discord.Interaction):
     update_quest_progress(user_id, "work_done", 1)
     await check_and_unlock_achievements(user_id, bot_client=bot)
 
+    # ENVOI PUBLIC DANS LE SALON B
+    await send_public_log(
+        content=f"💼 **{interaction.user.display_name}** a travaillé et gagné **{format_currency(gain)}** !"
+    )
+
     jobs = [
         f"Tu as réparé le PC d'un voisin et gagné **{format_currency(gain)}** !",
         f"Tu as modéré le serveur Discord toute la journée et reçu une prime de **{format_currency(gain)}** !",
@@ -2885,7 +2978,7 @@ async def work(interaction: discord.Interaction):
         f"Tu as fait le service du midi dans un restaurant bondé pour **{format_currency(gain)}** !",
         f"Tu as nettoyé les vitres du bureau local pour **{format_currency(gain)}** !",
     ]
-    await interaction.followup.send(random.choice(jobs))
+    await interaction.followup.send(random.choice(jobs), ephemeral=True)
 
 
 @bot.tree.command(name="pay", description="Envoie de l'argent à un autre membre")
@@ -2901,7 +2994,13 @@ async def pay(interaction: discord.Interaction, receiver: discord.Member, amount
     update_wallet(interaction.user.id, -amount)
     update_wallet(receiver.id, amount)
     update_quest_progress(interaction.user.id, "pay_sent", 1)
-    await interaction.followup.send(f"💸 {interaction.user.mention} ➔ **{format_currency(amount)}** à {receiver.mention} !")
+    
+    # ENVOI PUBLIC DANS LE SALON B
+    await send_public_log(
+        content=f"💸 **{interaction.user.display_name}** a envoyé **{format_currency(amount)}** à {receiver.display_name} !"
+    )
+    
+    await interaction.followup.send(f"💸 {interaction.user.mention} ➔ **{format_currency(amount)}** à {receiver.mention} !", ephemeral=True)
 
 
 @bot.tree.command(name="setup", description="[ADMIN] Configure les salons pour la Banque, Jim, John, Brook, Bob, Marchand, Troubadour ou les Succès")
@@ -3358,6 +3457,12 @@ class BlackjackView(ui.View):
             update_wallet(self.game.user_id, gain)
             update_game_stats(self.game.user_id, won=True)
             await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"🃏 **{interaction.user.display_name}** a fait un Blackjack ! +**{format_currency(gain)}**"
+            )
+            
             embed = self.build_embed(game_over=True, result_message=f"🎉 21 ! +{format_currency(gain)}")
             await interaction.response.edit_message(embed=embed, view=self)
             self.stop()
@@ -3366,6 +3471,12 @@ class BlackjackView(ui.View):
                 child.disabled = True
             update_wallet(self.game.user_id, -self.game.bet)
             update_game_stats(self.game.user_id, won=False)
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"🃏 **{interaction.user.display_name}** a fait un BUST au Blackjack ! -**{format_currency(self.game.bet)}**"
+            )
+            
             embed = self.build_embed(game_over=True, result_message=f"💥 BUST ! -{format_currency(self.game.bet)}")
             await interaction.response.edit_message(embed=embed, view=self)
             self.stop()
@@ -3389,16 +3500,31 @@ class BlackjackView(ui.View):
             update_game_stats(self.game.user_id, won=True)
             await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
             res = f"🎉 Banque > 21 ! +{format_currency(gain)}"
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"🃏 **{interaction.user.display_name}** a gagné au Blackjack ! +**{format_currency(gain)}**"
+            )
         elif player_score > dealer_score:
             gain = self.game.bet
             update_wallet(self.game.user_id, gain)
             update_game_stats(self.game.user_id, won=True)
             await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
             res = f"🎉 Gagné ! +{format_currency(gain)}"
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"🃏 **{interaction.user.display_name}** a gagné au Blackjack ! +**{format_currency(gain)}**"
+            )
         elif player_score < dealer_score:
             update_wallet(self.game.user_id, -self.game.bet)
             update_game_stats(self.game.user_id, won=False)
             res = "❌ Perdu !"
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"🃏 **{interaction.user.display_name}** a perdu au Blackjack ! -**{format_currency(self.game.bet)}**"
+            )
         else:
             res = "🤝 Égalité !"
 
@@ -3464,16 +3590,31 @@ async def run_slots_game(interaction: discord.Interaction, bet: int):
         update_wallet(interaction.user.id, reward - bet)
         update_game_stats(interaction.user.id, won=True)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
+        
+        # ENVOI PUBLIC DANS LE SALON B
+        await send_public_log(
+            content=f"🪙 **{interaction.user.display_name}** a fait un TRIPLE aux slots ! +**{format_currency(reward)}**"
+        )
     elif f1 == f2 or f2 == f3 or f1 == f3:
         reward = int(bet * 1.5)
         status = f"DUO! +{format_currency(reward)}"
         update_wallet(interaction.user.id, reward - bet)
         update_game_stats(interaction.user.id, won=True)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
+        
+        # ENVOI PUBLIC DANS LE SALON B
+        await send_public_log(
+            content=f"🪙 **{interaction.user.display_name}** a fait un DUO aux slots ! +**{format_currency(reward)}**"
+        )
     else:
         status = f"PERDU! -{format_currency(bet)}"
         update_wallet(interaction.user.id, -bet)
         update_game_stats(interaction.user.id, won=False)
+        
+        # ENVOI PUBLIC DANS LE SALON B
+        await send_public_log(
+            content=f"🪙 **{interaction.user.display_name}** a perdu aux slots ! -**{format_currency(bet)}**"
+        )
 
     final_embed = discord.Embed(title="🪙 SLOTS", description=get_slots_box(f1, f2, f3, status), color=0xD4AF37)
     if not show_anim:
@@ -3550,10 +3691,20 @@ class DiceView(ui.View):
             update_game_stats(self.user_id, won=True)
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             status = f"VICTOIRE! +{format_currency(self.bet)}"
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"🎲 **{interaction.user.display_name}** a gagné aux dés ! +**{format_currency(self.bet)}**"
+            )
         elif (p1 + p2) < (d1 + d2):
             update_wallet(self.user_id, -self.bet)
             update_game_stats(self.user_id, won=False)
             status = f"PERDU! -{format_currency(self.bet)}"
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"🎲 **{interaction.user.display_name}** a perdu aux dés ! -**{format_currency(self.bet)}**"
+            )
         else:
             status = "ÉGALITÉ !"
 
@@ -3648,10 +3799,20 @@ class RouletteView(ui.View):
             update_game_stats(self.user_id, won=True)
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             status = f"GAGNÉ! +{format_currency(reward)}"
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"🎡 **{interaction.user.display_name}** a gagné à la roulette ({color}) ! +**{format_currency(reward)}**"
+            )
         else:
             update_wallet(self.user_id, -self.bet)
             update_game_stats(self.user_id, won=False)
             status = f"PERDU! -{format_currency(self.bet)}"
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"🎡 **{interaction.user.display_name}** a perdu à la roulette ({choice}) ! -**{format_currency(self.bet)}**"
+            )
 
         final_content = get_box(number, icon, color, status)
         if not show_anim:
@@ -3763,6 +3924,12 @@ class RussianRouletteView(ui.View):
                 "\u001b[1;33m└──────────────────────┘\u001b[0m\n"
                 "```"
             )
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"🔫 **{interaction.user.display_name}** a survécu à 5 tirs de roulette russe et remporte **{format_currency(total_gain)}** !"
+            )
+            
             await interaction.response.edit_message(content=display, view=self)
             self.stop()
             return
@@ -3793,6 +3960,12 @@ class RussianRouletteView(ui.View):
         update_wallet(self.user_id, won)
         update_game_stats(self.user_id, won=True)
         await check_and_unlock_achievements(self.user_id, bot_client=bot)
+        
+        # ENVOI PUBLIC DANS LE SALON B
+        await send_public_log(
+            content=f"🔫 **{interaction.user.display_name}** a encaissé après {self.current_shot} tirs de roulette russe ! +**{format_currency(won)}**"
+        )
+        
         display = (
             "```ansi\n"
             "\u001b[1;32m┌──────────────────────┐\n"
@@ -3911,11 +4084,21 @@ class PFCView(ui.View):
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             res = "🎉 Gagné !"
             face = "(^o^) 🏆"
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"✂️ **{interaction.user.display_name}** a gagné au PFC ! +**{format_currency(self.bet)}**"
+            )
         else:
             update_wallet(self.user_id, -self.bet)
             update_game_stats(self.user_id, won=False)
             res = "❌ Perdu !"
             face = "(T_T) 💀"
+            
+            # ENVOI PUBLIC DANS LE SALON B
+            await send_public_log(
+                content=f"✂️ **{interaction.user.display_name}** a perdu au PFC ! -**{format_currency(self.bet)}**"
+            )
 
         final_content = get_pfc_box(emaps[self.choice], bc_str, res, face)
         if not show_anim:
@@ -3981,9 +4164,19 @@ async def run_poker_game(interaction: discord.Interaction, mise: int):
         update_wallet(interaction.user.id, gain)
         update_game_stats(interaction.user.id, won=True)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
+        
+        # ENVOI PUBLIC DANS LE SALON B
+        await send_public_log(
+            content=f"⚜️ **{interaction.user.display_name}** a fait un {res} au poker ! +**{format_currency(gain)}**"
+        )
     else:
         update_wallet(interaction.user.id, -mise)
         update_game_stats(interaction.user.id, won=False)
+        
+        # ENVOI PUBLIC DANS LE SALON B
+        await send_public_log(
+            content=f"⚜️ **{interaction.user.display_name}** a perdu au poker ({res}) ! -**{format_currency(mise)}**"
+        )
 
     name = interaction.user.display_name.upper()[:10]
 
