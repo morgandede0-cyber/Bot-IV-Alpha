@@ -61,6 +61,7 @@ class AnimatedMessageManager:
         self.show_animation = show_animation
         self.last_content = None
         self.last_embed = None
+        self.first_update = True
 
     async def update_animation(self, new_content: str = None, new_embed: discord.Embed = None, view: ui.View = None):
         if not self.show_animation:
@@ -68,7 +69,12 @@ class AnimatedMessageManager:
 
         if new_content != self.last_content or new_embed != self.last_embed:
             try:
-                await self.interaction.edit_original_response(content=new_content, embed=new_embed, view=view)
+                if self.first_update:
+                    # Première mise à jour : on édite le message original
+                    await self.interaction.edit_original_response(content=new_content, embed=new_embed, view=view)
+                    self.first_update = False
+                else:
+                    await self.interaction.edit_original_response(content=new_content, embed=new_embed, view=view)
                 self.last_content = new_content
                 self.last_embed = new_embed
             except discord.HTTPException as e:
@@ -1595,23 +1601,22 @@ class TavernDuelBetModal(ui.Modal, title="⚔️ Tavernier - Configuration du Du
         game_name = "Dés du Destin" if self.game_type == "dice" else "Pierre-Feuille-Ciseaux"
         view = DuelAcceptView(interaction.user, self.opponent, self.game_type, bet, from_jim=True, interaction_ref=interaction)
         
-        # Envoi PRIVÉ dans le salon A (uniquement pour l'opposant)
+        # ENVOI PUBLIC DANS LE SALON B (pas dans le salon A)
         embed = discord.Embed(
             title="⚔️ DÉFI DE DUEL (TAVERNE)",
             description=(
-                f"{interaction.user.mention} vous défie à un duel de **{game_name}** sous l'œil de Jim !\n\n"
+                f"{interaction.user.mention} défie {self.opponent.mention} à un duel de **{game_name}** sous l'œil de Jim !\n\n"
                 f"💰 **Mise en jeu** : `{format_currency(bet)}` par joueur\n\n"
+                f"{self.opponent.mention}, acceptez-vous ce défi ?\n\n"
                 f"⏰ Vous avez **30 secondes** pour répondre !"
             ),
             color=discord.Color.dark_red()
         )
-        msg = await interaction.followup.send(content=self.opponent.mention, embed=embed, view=view, ephemeral=True)
-        view.message = msg
-        
-        # Envoi PUBLIC dans le salon B
-        await send_public_log(
-            content=f"⚔️ **{interaction.user.display_name}** a défié **{self.opponent.display_name}** à un duel de **{game_name}** à la taverne ! Mise : **{format_currency(bet)}**"
-        )
+        # Envoyer dans le salon B (public)
+        await send_public_log(embed=embed)
+        # Envoyer en privé à l'opposant dans le salon A
+        await interaction.followup.send(content=self.opponent.mention, embed=embed, view=view, ephemeral=True)
+        view.message = interaction
 
 
 class TavernDuelSelect(ui.UserSelect):
@@ -1747,6 +1752,10 @@ class JimTavernView(ui.View):
         await interaction.response.send_message(embed=embed, view=TavernDuelChoiceView(), ephemeral=True)
 
 
+# ==========================================
+# JOHN - CORRECTION DU BRAQUAGE
+# ==========================================
+
 class JohnRobSelect(ui.UserSelect):
     def __init__(self):
         super().__init__(
@@ -1760,8 +1769,8 @@ class JohnRobSelect(ui.UserSelect):
         await interaction.response.defer(ephemeral=True)
         user_id = interaction.user.id
         
-        # Réduire le cooldown à 300 secondes (5 minutes)
-        retry_after = check_cooldown(user_id, "john_rob", 300)
+        # Cooldown réduit à 60 secondes (1 minute)
+        retry_after = check_cooldown(user_id, "john_rob", 60)
         if retry_after > 0:
             minutes, seconds = divmod(retry_after, 60)
             msg_text = f'🗡️ *John* : "Calme tes ardeurs de voleur, attends **{minutes}m {seconds}s**."'
@@ -1935,7 +1944,7 @@ class JohnCrimeView(ui.View):
     async def crime_btn(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         user_id = interaction.user.id
-        retry_after = check_cooldown(user_id, "john_crime", 300)  # 5 minutes au lieu de 30
+        retry_after = check_cooldown(user_id, "john_crime", 60)  # 1 minute
         if retry_after > 0:
             minutes, seconds = divmod(retry_after, 60)
             msg_text = f'🥷 *John* : "Reviens dans **{minutes}m {seconds}s**."'
@@ -1960,7 +1969,7 @@ class JohnCrimeView(ui.View):
             if loss > 0:
                 update_wallet(user_id, -loss)
                 await send_public_log(
-                    content=f"🚨 **{interaction.user.display_name}** s'est fait prendre par la milice lors d'un crime ! Amende : **-{format_currency(loss)}**"
+                    content=f"🚨 **{interaction.user.display_name}** s'est fait prendre par la milice lors d'un crime ! Amende : **{format_currency(loss)}**"
                 )
                 await interaction.followup.send(f"🚨 **[JOHN LE BRIGAND]** La milice t'a repéré ! Amende : -**{format_currency(loss)}**", ephemeral=True)
             else:
@@ -1969,7 +1978,7 @@ class JohnCrimeView(ui.View):
     @ui.button(label="Braquer quelqu'un", style=discord.ButtonStyle.secondary, emoji="🗡️", custom_id="john_rob_btn")
     async def rob_btn(self, interaction: discord.Interaction, button: ui.Button):
         user_id = interaction.user.id
-        retry_after = check_cooldown(user_id, "john_rob", 300)  # 5 minutes
+        retry_after = check_cooldown(user_id, "john_rob", 60)  # 1 minute
         if retry_after > 0:
             minutes, seconds = divmod(retry_after, 60)
             msg_text = f'🗡️ *John* : "Patiente encore **{minutes}m {seconds}s**."'
@@ -1985,7 +1994,7 @@ class JohnCrimeView(ui.View):
     @ui.button(label="Braquage de la Brinks", style=discord.ButtonStyle.success, emoji="🔐", custom_id="john_vault_btn")
     async def vault_btn(self, interaction: discord.Interaction, button: ui.Button):
         user_id = interaction.user.id
-        retry_after = check_cooldown(user_id, "john_vault", 7200)
+        retry_after = check_cooldown(user_id, "john_vault", 3600)
         if retry_after > 0:
             hours, remainder = divmod(retry_after, 3600)
             minutes, seconds = divmod(remainder, 60)
@@ -2009,7 +2018,7 @@ class JohnCrimeView(ui.View):
 
 
 # ==========================================
-# 7.1. BOB LES MAITRE D'ARME (ARÈNE DE COMBAT) - CORRIGÉ
+# 7.1. BOB LE MAITRE D'ARME - CORRIGÉ
 # ==========================================
 
 class ArenaFightView(ui.View):
@@ -2213,27 +2222,25 @@ class ArenaDuelBetModal(ui.Modal, title="⚔️ Arène - Mise du Duel"):
 
         view = DuelAcceptView(interaction.user, self.opponent, "dice", bet, from_jim=False, interaction_ref=interaction)
         
-        # Envoi PRIVÉ dans le salon A (uniquement pour l'opposant)
+        # ENVOI PUBLIC DANS LE SALON B
         embed = discord.Embed(
             title="⚔️ DÉFI DE L'ARÈNE",
             description=(
-                f"{interaction.user.mention} vous défie en duel dans l'arène de Bob !\n\n"
+                f"{interaction.user.mention} défie {self.opponent.mention} en duel dans l'arène de Bob !\n\n"
                 f"💰 **Mise en jeu** : `{format_currency(bet)}` par joueur\n\n"
+                f"{self.opponent.mention}, acceptez-vous ce combat ?\n\n"
                 f"⏰ Vous avez **30 secondes** pour répondre !"
             ),
             color=discord.Color.dark_gold()
         )
-        msg = await interaction.followup.send(content=self.opponent.mention, embed=embed, view=view, ephemeral=True)
-        view.message = msg
-        
-        # Envoi PUBLIC dans le salon B
-        await send_public_log(
-            content=f"⚔️ **{interaction.user.display_name}** a défié **{self.opponent.display_name}** à un duel dans l'arène de Bob ! Mise : **{format_currency(bet)}**"
-        )
+        await send_public_log(embed=embed)
+        # Envoyer en privé à l'opposant dans le salon A
+        await interaction.followup.send(content=self.opponent.mention, embed=embed, view=view, ephemeral=True)
+        view.message = interaction
 
 
 # ==========================================
-# 8. SUITE DES INTERFACES ET COMMANDES
+# 8. PMU ET BROOK - CORRIGÉ
 # ==========================================
 
 PMU_ODDS = {1: 3.0, 2: 3.0, 3: 3.0, 4: 3.0}
@@ -2354,7 +2361,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         initial_piste += f"│#{cid}[{data['emoji']}{'-'*piste_len}]│\n"
     initial_piste += "└──────────────────────┘\n```"
 
-    # Envoyer le message initial
+    # Envoyer UN SEUL message
     await interaction.followup.send(initial_piste, ephemeral=True)
     anim_manager = AnimatedMessageManager(interaction, show_animation=show_anim)
 
@@ -2420,7 +2427,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
     else:
         await anim_manager.update_animation(new_content=final_piste)
 
-    # Mettre à jour le panneau Brook (SANS réinitialiser les boutons)
+    # Mettre à jour le panneau Brook
     new_odds = generate_brook_odds()
     file_brook = discord.File("assets/brook.png", filename="brook.png") if os.path.exists("assets/brook.png") else None
     new_embed = discord.Embed(
@@ -2442,7 +2449,6 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
             if row:
                 channel = bot.get_channel(row[0])
                 if channel:
-                    # Chercher le message de Brook existant et le mettre à jour
                     async for message in channel.history(limit=20):
                         if message.author == bot.user and message.embeds:
                             embed_desc = message.embeds[0].description if message.embeds else ""
@@ -2538,23 +2544,21 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, game:
     game_name = "Dés du Destin" if game == "dice" else "Pierre-Feuille-Ciseaux"
     view = DuelAcceptView(interaction.user, opponent, game, bet, from_jim=True, interaction_ref=interaction)
 
-    # Envoi PRIVÉ dans le salon A
+    # ENVOI PUBLIC DANS LE SALON B
     embed = discord.Embed(
         title="⚔️ DÉFI DE DUEL",
         description=(
-            f"{interaction.user.mention} vous défie à un duel de **{game_name}** !\n\n"
+            f"{interaction.user.mention} défie {opponent.mention} à un duel de **{game_name}** !\n\n"
             f"💰 **Mise en jeu** : `{format_currency(bet)}` par joueur\n\n"
+            f"{opponent.mention}, acceptez-vous ce défi ?\n\n"
             f"⏰ Vous avez **30 secondes** pour répondre !"
         ),
         color=discord.Color.dark_red()
     )
-    msg = await interaction.followup.send(content=opponent.mention, embed=embed, view=view, ephemeral=True)
-    view.message = msg
-    
-    # Envoi PUBLIC dans le salon B
-    await send_public_log(
-        content=f"⚔️ **{interaction.user.display_name}** a défié **{opponent.display_name}** à un duel de **{game_name}** ! Mise : **{format_currency(bet)}**"
-    )
+    await send_public_log(embed=embed)
+    # Envoyer en privé à l'opposant dans le salon A
+    await interaction.followup.send(content=opponent.mention, embed=embed, view=view, ephemeral=True)
+    view.message = interaction
 
 
 @bot.tree.command(name="pmu", description="Parie sur une course de chevaux rapide (PMU)")
@@ -2566,7 +2570,7 @@ async def pmu(interaction: discord.Interaction):
 async def vault(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     user_id = interaction.user.id
-    retry_after = check_cooldown(user_id, "john_vault", 7200)
+    retry_after = check_cooldown(user_id, "john_vault", 3600)
     if retry_after > 0:
         hours, remainder = divmod(retry_after, 3600)
         minutes, seconds = divmod(remainder, 60)
