@@ -1595,18 +1595,17 @@ class TavernDuelBetModal(ui.Modal, title="⚔️ Tavernier - Configuration du Du
         game_name = "Dés du Destin" if self.game_type == "dice" else "Pierre-Feuille-Ciseaux"
         view = DuelAcceptView(interaction.user, self.opponent, self.game_type, bet, from_jim=True, interaction_ref=interaction)
         
-        # Envoi PRIVÉ dans le salon A (ephemeral=False car c'est un message visible mais avec mention)
+        # Envoi PRIVÉ dans le salon A (uniquement pour l'opposant)
         embed = discord.Embed(
             title="⚔️ DÉFI DE DUEL (TAVERNE)",
             description=(
-                f"{interaction.user.mention} défie {self.opponent.mention} à un duel de **{game_name}** sous l'œil de Jim !\n\n"
+                f"{interaction.user.mention} vous défie à un duel de **{game_name}** sous l'œil de Jim !\n\n"
                 f"💰 **Mise en jeu** : `{format_currency(bet)}` par joueur\n\n"
-                f"{self.opponent.mention}, acceptez-vous ce défi ?\n\n"
                 f"⏰ Vous avez **30 secondes** pour répondre !"
             ),
             color=discord.Color.dark_red()
         )
-        msg = await interaction.followup.send(content=self.opponent.mention, embed=embed, view=view)
+        msg = await interaction.followup.send(content=self.opponent.mention, embed=embed, view=view, ephemeral=True)
         view.message = msg
         
         # Envoi PUBLIC dans le salon B
@@ -1760,7 +1759,9 @@ class JohnRobSelect(ui.UserSelect):
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         user_id = interaction.user.id
-        retry_after = check_cooldown(user_id, "john_rob", 3600)
+        
+        # Réduire le cooldown à 300 secondes (5 minutes)
+        retry_after = check_cooldown(user_id, "john_rob", 300)
         if retry_after > 0:
             minutes, seconds = divmod(retry_after, 60)
             msg_text = f'🗡️ *John* : "Calme tes ardeurs de voleur, attends **{minutes}m {seconds}s**."'
@@ -1776,22 +1777,57 @@ class JohnRobSelect(ui.UserSelect):
         if victim_wallet < 50:
             return await interaction.followup.send(f"🗡️ *John* : \" {victim.mention} n'a pas un sou, c'est une perte de temps.\"", ephemeral=True)
 
-        if random.random() < 0.4:
-            stolen = random.randint(10, int(victim_wallet * 0.5))
+        # 3 possibilités
+        roll = random.random()
+        
+        if roll < 0.4:  # 40% - Succès
+            stolen = random.randint(50, int(victim_wallet * 0.7))
             update_wallet(victim.id, -stolen)
             update_wallet(user_id, stolen)
             await check_and_unlock_achievements(user_id, bot_client=bot)
             
             await send_public_log(
-                content=f"🥷 **{interaction.user.display_name}** a volé **{format_currency(stolen)}** à {victim.display_name} !"
+                content=f"🥷 **{interaction.user.display_name}** a réussi à voler **{format_currency(stolen)}** à {victim.display_name} !"
             )
             
-            await interaction.followup.send(f"🥷 **[JOHN LE BRIGAND]** Bien joué ! Tu as volé **{format_currency(stolen)}** à {victim.mention} !", ephemeral=True)
-        else:
-            fine = min(200, thief_wallet)
-            if fine > 0:
-                update_wallet(user_id, -fine)
-            await interaction.followup.send(f"❌ **[JOHN LE BRIGAND]** Échec critique ! John t'a pris une commission de fuite de **{format_currency(fine)}**.", ephemeral=True)
+            await interaction.followup.send(
+                f"🥷 **[JOHN LE BRIGAND]** Tu as réussi à dérober **{format_currency(stolen)}** à {victim.mention} sans qu'il s'en rende compte ! Bien joué !",
+                ephemeral=True
+            )
+            
+        elif roll < 0.7:  # 30% - Échec
+            await send_public_log(
+                content=f"🥷 **{interaction.user.display_name}** a tenté de voler {victim.display_name} mais a échoué !"
+            )
+            
+            await interaction.followup.send(
+                f"❌ **[JOHN LE BRIGAND]** Tu as essayé mais {victim.mention} s'est méfié et a gardé son argent bien en sécurité. Pas de butin aujourd'hui.",
+                ephemeral=True
+            )
+            
+        else:  # 30% - Victime riposte
+            stolen_from_thief = min(random.randint(50, int(thief_wallet * 0.5)), thief_wallet)
+            if stolen_from_thief > 0:
+                update_wallet(user_id, -stolen_from_thief)
+                update_wallet(victim.id, stolen_from_thief)
+                
+                await send_public_log(
+                    content=f"💥 **{interaction.user.display_name}** s'est fait tabasser et dépouiller par {victim.display_name} ! Perte : **{format_currency(stolen_from_thief)}**"
+                )
+                
+                await interaction.followup.send(
+                    f"💥 **[JOHN LE BRIGAND]** Mauvais plan ! {victim.mention} t'a repéré et t'a tabassé avant de te dépouiller de **{format_currency(stolen_from_thief)}** !",
+                    ephemeral=True
+                )
+            else:
+                await send_public_log(
+                    content=f"💥 **{interaction.user.display_name}** s'est fait repérer par {victim.display_name} mais le voleur était trop pauvre pour se faire dépouiller !"
+                )
+                
+                await interaction.followup.send(
+                    f"💥 **[JOHN LE BRIGAND]** {victim.mention} t'a repéré et t'a roué de coups, mais t'es trop pauvre pour te faire voler. Ça t'apprendra !",
+                    ephemeral=True
+                )
 
 
 class JohnRobView(ui.View):
@@ -1899,7 +1935,7 @@ class JohnCrimeView(ui.View):
     async def crime_btn(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         user_id = interaction.user.id
-        retry_after = check_cooldown(user_id, "john_crime", 1800)
+        retry_after = check_cooldown(user_id, "john_crime", 300)  # 5 minutes au lieu de 30
         if retry_after > 0:
             minutes, seconds = divmod(retry_after, 60)
             msg_text = f'🥷 *John* : "Reviens dans **{minutes}m {seconds}s**."'
@@ -1933,7 +1969,7 @@ class JohnCrimeView(ui.View):
     @ui.button(label="Braquer quelqu'un", style=discord.ButtonStyle.secondary, emoji="🗡️", custom_id="john_rob_btn")
     async def rob_btn(self, interaction: discord.Interaction, button: ui.Button):
         user_id = interaction.user.id
-        retry_after = check_cooldown(user_id, "john_rob", 3600)
+        retry_after = check_cooldown(user_id, "john_rob", 300)  # 5 minutes
         if retry_after > 0:
             minutes, seconds = divmod(retry_after, 60)
             msg_text = f'🗡️ *John* : "Patiente encore **{minutes}m {seconds}s**."'
@@ -1973,7 +2009,7 @@ class JohnCrimeView(ui.View):
 
 
 # ==========================================
-# 7.1. BOB LES MAITRE D'ARME (ARÈNE DE COMBAT)
+# 7.1. BOB LES MAITRE D'ARME (ARÈNE DE COMBAT) - CORRIGÉ
 # ==========================================
 
 class ArenaFightView(ui.View):
@@ -1983,6 +2019,7 @@ class ArenaFightView(ui.View):
         self.bet = bet
         self.player_hp = 100
         self.bob_hp = 100
+        self.round_count = 0
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -1993,8 +2030,8 @@ class ArenaFightView(ui.View):
     def build_embed(self, status_msg: str, color=discord.Color.red()) -> discord.Embed:
         desc = (
             f"⚔️ **DUEL DANS L'ARÈNE** ⚔️\n\n"
-            f"👤 **Votre PV** : `{'❤️' * int(self.player_hp / 10)}` ({self.player_hp}/100)\n"
-            f"🛡️ **Bob le Maître d'Arme** : `{'🖤' * int(self.bob_hp / 10)}` ({self.bob_hp}/100)\n\n"
+            f"👤 **Votre PV** : `{'❤️' * max(1, int(self.player_hp / 10))}` ({self.player_hp}/100)\n"
+            f"🛡️ **Bob le Maître d'Arme** : `{'🖤' * max(1, int(self.bob_hp / 10))}` ({self.bob_hp}/100)\n\n"
             f"📜 *Action* : {status_msg}"
         )
         embed = discord.Embed(title="🏟️ Arène des IV Sceaux", description=desc, color=color)
@@ -2002,6 +2039,8 @@ class ArenaFightView(ui.View):
         return embed
 
     async def process_turn(self, interaction: discord.Interaction, player_move: str):
+        self.round_count += 1
+        
         if player_move == "heavy":
             p_dmg = random.randint(18, 32) if random.random() < 0.6 else 0
             p_text = f"Vous abattez une frappe lourde qui inflige **{p_dmg} dégâts** !" if p_dmg > 0 else "Votre frappe lourde a fendu l'air dans le vide !"
@@ -2023,11 +2062,12 @@ class ArenaFightView(ui.View):
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             
             await send_public_log(
-                content=f"⚔️ **{interaction.user.display_name}** a vaincu Bob dans l'arène et remporte **{format_currency(gain)}** !"
+                content=f"⚔️ **{interaction.user.display_name}** a vaincu Bob dans l'arène après {self.round_count} rounds et remporte **{format_currency(gain)}** !"
             )
             
             embed = self.build_embed(f"{p_text}\n\n🏆 **VICTOIRE !** Bob s'agenouille, vaincu par votre bravoure ! +**{format_currency(gain)}**", color=discord.Color.green())
-            return await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.response.edit_message(embed=embed, view=self)
+            return
 
         bob_move = random.choice(["heavy", "fast", "bash"])
         if bob_move == "heavy" and player_move != "parry":
@@ -2049,11 +2089,12 @@ class ArenaFightView(ui.View):
             update_game_stats(self.user_id, won=False)
             
             await send_public_log(
-                content=f"💀 **{interaction.user.display_name}** a été vaincu par Bob dans l'arène ! (-{format_currency(self.bet)})"
+                content=f"💀 **{interaction.user.display_name}** a été vaincu par Bob dans l'arène après {self.round_count} rounds ! (-{format_currency(self.bet)})"
             )
             
             embed = self.build_embed(f"{p_text}\n{b_text}\n\n💀 **DÉFAITE !** Bob vous terrasse d'un ultime coup de taille. -**{format_currency(self.bet)}**", color=discord.Color.dark_red())
-            return await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.response.edit_message(embed=embed, view=self)
+            return
 
         embed = self.build_embed(f"{p_text}\n{b_text}")
         await interaction.response.edit_message(embed=embed, view=self)
@@ -2076,8 +2117,14 @@ async def run_arena_fight(interaction: discord.Interaction, bet: int):
         return
 
     update_quest_progress(interaction.user.id, "arena_fight", 1)
+    
+    # Envoyer un message public dans le salon B
+    await send_public_log(
+        content=f"⚔️ **{interaction.user.display_name}** entre dans l'arène pour affronter Bob ! Mise : **{format_currency(bet)}**"
+    )
+    
     view = ArenaFightView(interaction.user.id, bet)
-    embed = view.build_embed("Le combat commence ! Choisissez votre style d'attaque.")
+    embed = view.build_embed("Le combat commence ! Choisissez votre style d'attaque.", color=discord.Color.orange())
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
@@ -2091,7 +2138,7 @@ class BobArenaView(ui.View):
         retry_after = check_cooldown(user_id, "arene_fight", 1800)
         if retry_after > 0:
             minutes, seconds = divmod(retry_after, 60)
-            return await interaction.response.send_message(f'⚔️ *Bob* : "Reprenez votre souffle, l\'arène n\'ouvre ses portes qu\'dans **{minutes}m {seconds}s**."', ephemeral=True)
+            return await interaction.response.send_message(f'⚔️ *Bob* : "Reprenez votre souffle, l\'arène n\'ouvre ses portes que dans **{minutes}m {seconds}s**."', ephemeral=True)
 
         await interaction.response.send_modal(BetModal("⚔️ Arène - Mise de Combat", run_arena_fight))
 
@@ -2166,17 +2213,17 @@ class ArenaDuelBetModal(ui.Modal, title="⚔️ Arène - Mise du Duel"):
 
         view = DuelAcceptView(interaction.user, self.opponent, "dice", bet, from_jim=False, interaction_ref=interaction)
         
+        # Envoi PRIVÉ dans le salon A (uniquement pour l'opposant)
         embed = discord.Embed(
             title="⚔️ DÉFI DE L'ARÈNE",
             description=(
-                f"{interaction.user.mention} défie {self.opponent.mention} en duel dans l'arène de Bob !\n\n"
+                f"{interaction.user.mention} vous défie en duel dans l'arène de Bob !\n\n"
                 f"💰 **Mise en jeu** : `{format_currency(bet)}` par joueur\n\n"
-                f"{self.opponent.mention}, acceptez-vous ce combat ?\n\n"
                 f"⏰ Vous avez **30 secondes** pour répondre !"
             ),
             color=discord.Color.dark_gold()
         )
-        msg = await interaction.followup.send(content=self.opponent.mention, embed=embed, view=view)
+        msg = await interaction.followup.send(content=self.opponent.mention, embed=embed, view=view, ephemeral=True)
         view.message = msg
         
         # Envoi PUBLIC dans le salon B
@@ -2301,18 +2348,19 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
     piste_len = 10
     positions = {1: 0, 2: 0, 3: 0, 4: 0}
 
+    # UN SEUL message initial
     initial_piste = "🏁 **Brook - Départ de la course PMU !** Les chevaux s'élancent...\n```text\n┌── HIPPODROME ────────┐\n"
     for cid, data in chevaux.items():
         initial_piste += f"│#{cid}[{data['emoji']}{'-'*piste_len}]│\n"
     initial_piste += "└──────────────────────┘\n```"
 
-    # Envoyer UN SEUL message initial
+    # Envoyer le message initial
     await interaction.followup.send(initial_piste, ephemeral=True)
     anim_manager = AnimatedMessageManager(interaction, show_animation=show_anim)
 
     weights = [round(10 / dynamic_odds[i], 2) for i in range(1, 5)]
 
-    # Animation
+    # Animation sur le MÊME message
     while max(positions.values()) < piste_len:
         await asyncio.sleep(1.0)
         for c in positions:
@@ -2329,7 +2377,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         piste_str += "└──────────────────────┘\n```"
         await anim_manager.update_animation(new_content=piste_str)
 
-    # Résultat final
+    # Résultat final sur le MÊME message
     max_p = max(positions.values())
     gagnants = [c for c, p in positions.items() if p >= max_p]
 
@@ -2363,7 +2411,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         final_piste += f"│#{cid}[{ligne}]│\n"
     final_piste += f"└──────────────────────┘\n```\n{res_msg}"
 
-    # Mettre à jour le message original
+    # Mettre à jour le message original avec le résultat
     if not show_anim:
         try:
             await interaction.edit_original_response(content=final_piste)
@@ -2372,7 +2420,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
     else:
         await anim_manager.update_animation(new_content=final_piste)
 
-    # Mettre à jour les cotes du panneau Brook (les boutons RESTENT)
+    # Mettre à jour le panneau Brook (SANS réinitialiser les boutons)
     new_odds = generate_brook_odds()
     file_brook = discord.File("assets/brook.png", filename="brook.png") if os.path.exists("assets/brook.png") else None
     new_embed = discord.Embed(
@@ -2394,13 +2442,16 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
             if row:
                 channel = bot.get_channel(row[0])
                 if channel:
-                    async for message in channel.history(limit=10):
-                        if message.author == bot.user and message.embeds and "Brook" in message.embeds[0].description:
-                            kwargs = {"embed": new_embed, "view": BrookBookmakerView(new_odds)}
-                            if file_brook:
-                                kwargs["files"] = [file_brook]
-                            await message.edit(**kwargs)
-                            break
+                    # Chercher le message de Brook existant et le mettre à jour
+                    async for message in channel.history(limit=20):
+                        if message.author == bot.user and message.embeds:
+                            embed_desc = message.embeds[0].description if message.embeds else ""
+                            if embed_desc and "Brook" in embed_desc:
+                                kwargs = {"embed": new_embed, "view": BrookBookmakerView(new_odds)}
+                                if file_brook:
+                                    kwargs["files"] = [file_brook]
+                                await message.edit(**kwargs)
+                                break
     except Exception as e:
         print(f"❌ Erreur lors de l'actualisation du panneau Brook : {e}")
 
@@ -2487,17 +2538,17 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, game:
     game_name = "Dés du Destin" if game == "dice" else "Pierre-Feuille-Ciseaux"
     view = DuelAcceptView(interaction.user, opponent, game, bet, from_jim=True, interaction_ref=interaction)
 
+    # Envoi PRIVÉ dans le salon A
     embed = discord.Embed(
         title="⚔️ DÉFI DE DUEL",
         description=(
-            f"{interaction.user.mention} défie {opponent.mention} à un duel de **{game_name}** !\n\n"
+            f"{interaction.user.mention} vous défie à un duel de **{game_name}** !\n\n"
             f"💰 **Mise en jeu** : `{format_currency(bet)}` par joueur\n\n"
-            f"{opponent.mention}, acceptez-vous ce défi ?\n\n"
             f"⏰ Vous avez **30 secondes** pour répondre !"
         ),
         color=discord.Color.dark_red()
     )
-    msg = await interaction.followup.send(content=opponent.mention, embed=embed, view=view)
+    msg = await interaction.followup.send(content=opponent.mention, embed=embed, view=view, ephemeral=True)
     view.message = msg
     
     # Envoi PUBLIC dans le salon B
