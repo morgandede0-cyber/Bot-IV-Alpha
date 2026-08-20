@@ -17,14 +17,13 @@ from discord.ext import commands
 # 1. CONFIGURATION INITIALE & CONSTANTES
 # ==========================================
 
-# Récupération sécurisée du token via la variable d'environnement
 TOKEN = (
     os.getenv("TAVERNE_TOKEN")
     or os.getenv("DISCORD_BOT_TOKEN")
     or os.getenv("BOT_TOKEN")
     or os.getenv("TOKEN")
 )
-MAX_BET = 500  # Mise maximale autorisée pour les jeux
+MAX_BET = 500
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -33,10 +32,7 @@ intents.presences = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Cooldowns en mémoire : {(user_id, command_name): timestamp_expiration}
 cooldowns = {}
-
-# Mode test global pour les cooldowns
 TEST_MODE_ENABLED = False
 
 # ==========================================
@@ -241,6 +237,15 @@ def init_db():
             episode_items,
         )
 
+        # AJOUT : Table pour mémoriser le dernier chapitre
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_last_chapter (
+                user_id INTEGER PRIMARY KEY,
+                last_episode INTEGER DEFAULT 1,
+                last_shop_episode INTEGER DEFAULT 1
+            )
+        """)
+
         columns_to_add = [
             ("last_daily", "INTEGER DEFAULT 0"),
             ("streak", "INTEGER DEFAULT 0"),
@@ -255,6 +260,37 @@ def init_db():
                 cursor.execute(f"ALTER TABLE users ADD COLUMN {col} {col_type}")
             except Exception:
                 pass
+        conn.commit()
+
+
+def get_user_last_chapter(user_id: int):
+    """Récupère le dernier chapitre mémorisé pour un utilisateur"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT last_episode, last_shop_episode FROM user_last_chapter WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        if row:
+            return row[0], row[1]
+        return 1, 1
+
+
+def update_user_last_chapter(user_id: int, last_episode: int = None, last_shop_episode: int = None):
+    """Met à jour le dernier chapitre mémorisé"""
+    current_ep, current_shop = get_user_last_chapter(user_id)
+    if last_episode is None:
+        last_episode = current_ep
+    if last_shop_episode is None:
+        last_shop_episode = current_shop
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO user_last_chapter (user_id, last_episode, last_shop_episode)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                last_episode = excluded.last_episode,
+                last_shop_episode = excluded.last_shop_episode
+        """, (user_id, last_episode, last_shop_episode))
         conn.commit()
 
 
@@ -589,22 +625,18 @@ TIERS_NAMES = {
 }
 
 TIERS_COLORS = {
-    1: "#CD7F32"  # Bronze
+    1: "#CD7F32"
 }
 
-# Variables globales pour les succès chargés depuis GitHub
 ACHIEVEMENTS_DEFS = {}
 ACHIEVEMENTS_LOADED = False
 
-# URL du fichier JSON sur GitHub
 GITHUB_ACHIEVEMENTS_URL = "https://raw.githubusercontent.com/morgandede0-cyber/Bot-IV-Alpha/main/achievements_list.json"
 
 
 async def load_achievements_from_github():
-    """Charge la liste des succès depuis le fichier JSON sur GitHub"""
     global ACHIEVEMENTS_DEFS, ACHIEVEMENTS_LOADED
     
-    # Fallback local MINIMAL en cas d'échec
     FALLBACK_ACHIEVEMENTS = {
         "games_master": {
             "title": "Maître des Jeux",
@@ -644,14 +676,11 @@ async def load_achievements_from_github():
         return False
 
 
-# Commande pour recharger les succès sans redémarrer le bot
 @bot.tree.command(name="reload-achievements", description="[ADMIN] Recharge la liste des succès depuis GitHub")
 @app_commands.checks.has_permissions(administrator=True)
 async def reload_achievements(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    
     success = await load_achievements_from_github()
-    
     if success:
         embed = discord.Embed(
             title="✅ Succès rechargés",
@@ -661,10 +690,9 @@ async def reload_achievements(interaction: discord.Interaction):
     else:
         embed = discord.Embed(
             title="⚠️ Rechargement partiel",
-            description="Les succès ont été chargés depuis le fallback local (GitHub inaccessible ou fichier invalide).",
+            description="Les succès ont été chargés depuis le fallback local.",
             color=discord.Color.orange()
         )
-    
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -676,13 +704,11 @@ EPISODE_TITLES = {}
 EPISODE_STORIES = {}
 EPISODES_LOADED = False
 
-# URL de base du dossier sur GitHub
 EPISODES_BASE_URL = "https://raw.githubusercontent.com/morgandede0-cyber/Bot-IV-Alpha/main/episodes/"
-# Nombre total d'épisodes disponibles
 TOTAL_EPISODES = 30
 
+
 async def load_episodes_from_github():
-    """Charge les épisodes depuis les fichiers texte sur GitHub"""
     global EPISODE_TITLES, EPISODE_STORIES, EPISODES_LOADED
     
     titles = {}
@@ -694,7 +720,6 @@ async def load_episodes_from_github():
             for ep_num in range(1, TOTAL_EPISODES + 1):
                 filename = f"S1 EP{ep_num}.txt"
                 url = EPISODES_BASE_URL + filename
-                
                 try:
                     async with session.get(url, timeout=10) as response:
                         if response.status == 200:
@@ -723,7 +748,6 @@ async def load_episodes_from_github():
             EPISODE_STORIES = {1: "« Une histoire mystérieuse... »"}
             EPISODES_LOADED = True
             return False
-            
     except Exception as e:
         print(f"❌ Erreur chargement épisodes: {e}")
         EPISODE_TITLES = {1: "Épisode 1 — L'Arche"}
@@ -732,14 +756,11 @@ async def load_episodes_from_github():
         return False
 
 
-# Commande admin pour recharger les épisodes
 @bot.tree.command(name="reload-episodes", description="[ADMIN] Recharge les épisodes depuis GitHub")
 @app_commands.checks.has_permissions(administrator=True)
 async def reload_episodes(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    
     success = await load_episodes_from_github()
-    
     if success:
         embed = discord.Embed(
             title="✅ Épisodes rechargés",
@@ -752,7 +773,6 @@ async def reload_episodes(interaction: discord.Interaction):
             description="Certains épisodes n'ont pas pu être chargés. Vérifie les fichiers dans le dossier `episodes/`.",
             color=discord.Color.orange()
         )
-    
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -850,59 +870,48 @@ def evaluate_stat_for_achievement(key: str, user_id: int) -> int:
         games_won = games_won or 0
         total_money = wallet + bank
 
-        # === SUCCÈS QUÊTES ===
         if key.startswith("quest_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
             q_row = cursor.fetchone()
             return q_row[0] if q_row else 0
         
-        # === SUCCÈS ARÈNE ===
         elif key.startswith("arena_"):
             if "essai" in key or "assidu" in key:
                 return games_played
             elif "guerrier" in key or "champion" in key or "terreur" in key:
                 return games_won
         
-        # === SUCCÈS PMU ===
         elif key.startswith("pmu_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'pmu_bet' AND claimed = 1", (user_id,))
             return cursor.fetchone()[0] if cursor.fetchone() else 0
         
-        # === SUCCÈS CRIME ===
         elif key.startswith("crime_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'crime_attempt' AND claimed = 1", (user_id,))
             return cursor.fetchone()[0] if cursor.fetchone() else 0
         
-        # === SUCCÈS VAULT (BRINKS) ===
         elif key.startswith("vault_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'vault_attempt' AND claimed = 1", (user_id,))
             return cursor.fetchone()[0] if cursor.fetchone() else 0
         
-        # === SUCCÈS DUEL ===
         elif key.startswith("duel_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'duel_played' AND claimed = 1", (user_id,))
             return cursor.fetchone()[0] if cursor.fetchone() else 0
         
-        # === SUCCÈS DAILY ===
         elif key.startswith("daily_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
             return cursor.fetchone()[0] if cursor.fetchone() else 0
         
-        # === SUCCÈS TAVERNE ===
         elif key.startswith("taverne_"):
             return beers_today
         
-        # === SUCCÈS BANQUE ===
         elif key.startswith("bank_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'bank_deposit' AND claimed = 1", (user_id,))
             return cursor.fetchone()[0] if cursor.fetchone() else 0
         
-        # === SUCCÈS LARCIN ===
         elif key.startswith("larcin_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'crime_attempt' AND claimed = 1", (user_id,))
             return cursor.fetchone()[0] if cursor.fetchone() else 0
         
-        # === ANCIENS SUCCÈS (Compatibilité) ===
         elif key == "games_master":
             return games_won
         elif key == "wealth_tycoon":
@@ -924,7 +933,6 @@ def evaluate_stat_for_achievement(key: str, user_id: int) -> int:
 async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
     global ACHIEVEMENTS_DEFS, ACHIEVEMENTS_LOADED
     
-    # Si les succès ne sont pas chargés, on les charge
     if not ACHIEVEMENTS_LOADED:
         await load_achievements_from_github()
     
@@ -1129,8 +1137,66 @@ class BrookPMUBetModal(ui.Modal, title="📜 Brook - Montant de la mise"):
 
 
 # ==========================================
-# 5.1. SYSTÈMES DE DUEL ENTRE JOUEURS (JIM)
+# 5.1. SYSTÈMES DE DUEL ENTRE JOUEURS (JIM ET BOB)
 # ==========================================
+
+# Messages de moquerie pour les duels refusés
+DUEL_REFUSED_MESSAGES = [
+    "😱 **{opponent}** a eu la trouille et s'est caché sous la table ! {challenger} reste sans adversaire...",
+    "🫣 **{opponent}** a préféré sauver sa peau plutôt que d'affronter {challenger} ! Quel couard !",
+    "🍗 **{opponent}** s'est enfui en courant, il avait trop peur de perdre ses précieux deniers !",
+    "🤡 **{opponent}** a fait le mort, {challenger} attend toujours son duel...",
+    "💀 **{opponent}** a réalisé qu'il allait perdre et a préféré faire semblant de ne pas voir le défi !",
+    "🐔 **{opponent}** a picoré et s'est envolé ! {challenger} reste avec sa fierté intacte.",
+    "😤 **{opponent}** a décliné le duel, trop occupé à compter ses sous dans son coin !",
+    "🤣 **{opponent}** a eu la pétoche et s'est planqué derrière le comptoir !"
+]
+
+class DuelTimerManager:
+    """Gère les timers de duel avec annulation automatique"""
+    _active_duels = {}
+    
+    @classmethod
+    async def start_duel_timer(cls, interaction: discord.Interaction, challenger: discord.Member, opponent: discord.Member, view: ui.View, timeout: int = 30):
+        duel_key = f"{challenger.id}_{opponent.id}"
+        cls._active_duels[duel_key] = {
+            "interaction": interaction,
+            "challenger": challenger,
+            "opponent": opponent,
+            "view": view,
+            "timeout": timeout
+        }
+        
+        await asyncio.sleep(timeout)
+        
+        # Vérifier si le duel est toujours actif
+        if duel_key in cls._active_duels:
+            # Le duel a expiré
+            duel_data = cls._active_duels.pop(duel_key)
+            
+            # Désactiver les boutons
+            for child in duel_data["view"].children:
+                child.disabled = True
+            
+            # Message de moquerie aléatoire
+            mock_message = random.choice(DUEL_REFUSED_MESSAGES).format(
+                opponent=duel_data["opponent"].mention,
+                challenger=duel_data["challenger"].mention
+            )
+            
+            embed = discord.Embed(
+                title="⏰ DUEL EXPIRÉ",
+                description=f"{mock_message}\n\nLe duel a été automatiquement annulé.",
+                color=discord.Color.dark_red()
+            )
+            
+            try:
+                await duel_data["interaction"].edit_original_response(embed=embed, view=duel_data["view"])
+                await send_public_log(
+                    content=f"⏰ **{duel_data['challenger'].display_name}** a défié {duel_data['opponent'].display_name} mais celui-ci n'a pas répondu à temps ! (30s)"
+                )
+            except Exception as e:
+                print(f"❌ Erreur expiration duel : {e}")
 
 class DuelPFCView(ui.View):
     def __init__(self, challenger: discord.Member, opponent: discord.Member, bet: int):
@@ -1173,6 +1239,9 @@ class DuelPFCView(ui.View):
                 update_game_stats(self.opponent.id, won=False)
                 await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.challenger.mention} !** Il remporte **{format_currency(self.bet)}**."
+                await send_public_log(
+                    content=f"⚔️ **{self.challenger.display_name}** a remporté un duel PFC contre {self.opponent.display_name} ! +**{format_currency(self.bet)}**"
+                )
             else:
                 update_wallet(self.opponent.id, self.bet)
                 update_wallet(self.challenger.id, -self.bet)
@@ -1180,6 +1249,9 @@ class DuelPFCView(ui.View):
                 update_game_stats(self.challenger.id, won=False)
                 await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.opponent.mention} !** Il remporte **{format_currency(self.bet)}**."
+                await send_public_log(
+                    content=f"⚔️ **{self.opponent.display_name}** a remporté un duel PFC contre {self.challenger.display_name} ! +**{format_currency(self.bet)}**"
+                )
 
             embed = discord.Embed(
                 title="⚔️ RÉSULTAT DU DUEL PFC",
@@ -1245,6 +1317,9 @@ class DuelDiceView(ui.View):
                 update_game_stats(self.challenger.id, won=False)
                 await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.challenger.mention} ({c_score} vs {o_score}) !** Il remporte **{format_currency(self.bet)}**."
+                await send_public_log(
+                    content=f"🎲 **{self.challenger.display_name}** a remporté un duel de dés contre {self.opponent.display_name} ! +**{format_currency(self.bet)}**"
+                )
             else:
                 update_wallet(self.opponent.id, self.bet)
                 update_wallet(self.challenger.id, -self.bet)
@@ -1252,6 +1327,9 @@ class DuelDiceView(ui.View):
                 update_game_stats(self.opponent.id, won=False)
                 await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.opponent.mention} ({o_score} vs {c_score}) !** Il remporte **{format_currency(self.bet)}**."
+                await send_public_log(
+                    content=f"🎲 **{self.opponent.display_name}** a remporté un duel de dés contre {self.challenger.display_name} ! +**{format_currency(self.bet)}**"
+                )
 
             embed = discord.Embed(
                 title="⚔️ RÉSULTAT DU DUEL DÉS",
@@ -1266,18 +1344,47 @@ class DuelDiceView(ui.View):
 
 
 class DuelAcceptView(ui.View):
-    def __init__(self, challenger: discord.Member, opponent: discord.Member, game_type: str, bet: int):
-        super().__init__(timeout=60)
+    def __init__(self, challenger: discord.Member, opponent: discord.Member, game_type: str, bet: int, from_jim: bool = True):
+        super().__init__(timeout=30)
         self.challenger = challenger
         self.opponent = opponent
         self.game_type = game_type
         self.bet = bet
+        self.from_jim = from_jim
+        self._timer_started = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.opponent.id:
             await interaction.response.send_message("❌ Ce n'est pas à vous d'accepter ce duel !", ephemeral=True)
             return False
         return True
+
+    async def on_timeout(self):
+        """Quand le timer de 30s est écoulé"""
+        # Désactiver les boutons
+        for child in self.children:
+            child.disabled = True
+        
+        # Message de moquerie aléatoire
+        mock_message = random.choice(DUEL_REFUSED_MESSAGES).format(
+            opponent=self.opponent.mention,
+            challenger=self.challenger.mention
+        )
+        
+        location = "la taverne" if self.from_jim else "l'arène"
+        embed = discord.Embed(
+            title="⏰ DUEL EXPIRÉ",
+            description=f"{mock_message}\n\nLe duel à {location} a été automatiquement annulé.",
+            color=discord.Color.dark_red()
+        )
+        
+        try:
+            await self.message.edit(embed=embed, view=self)
+            await send_public_log(
+                content=f"⏰ **{self.challenger.display_name}** a défié {self.opponent.display_name} mais celui-ci n'a pas répondu à temps ! (30s) 🐔"
+            )
+        except Exception as e:
+            print(f"❌ Erreur expiration duel : {e}")
 
     @ui.button(label="Accepter le Duel", style=discord.ButtonStyle.success, emoji="✅")
     async def accept(self, interaction: discord.Interaction, button: ui.Button):
@@ -1294,6 +1401,11 @@ class DuelAcceptView(ui.View):
 
         update_quest_progress(self.challenger.id, "duel_played", 1)
         update_quest_progress(self.opponent.id, "duel_played", 1)
+
+        location = "de la taverne" if self.from_jim else "de l'arène"
+        await send_public_log(
+            content=f"⚔️ **{self.challenger.display_name}** et **{self.opponent.display_name}** s'affrontent dans un duel {location} ! Mise : **{format_currency(self.bet)}**"
+        )
 
         if self.game_type == "pfc":
             view = DuelPFCView(self.challenger, self.opponent, self.bet)
@@ -1322,6 +1434,9 @@ class DuelAcceptView(ui.View):
             color=discord.Color.red()
         )
         await interaction.response.edit_message(embed=embed, view=self)
+        await send_public_log(
+            content=f"❌ **{self.opponent.display_name}** a refusé le duel de **{self.challenger.display_name}** !"
+        )
 
 
 # ==========================================
@@ -1361,7 +1476,6 @@ class DepositModal(ui.Modal, title="📥 DAB - Dépôt de billets"):
             update_quest_progress(interaction.user.id, "bank_deposit", 1)
             await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
 
-            # ENVOI PUBLIC DANS LE SALON B (Dépôt)
             await send_public_log(
                 content=f"💵 **{interaction.user.display_name}** a déposé **{format_currency(val)}** à la banque !"
             )
@@ -1408,7 +1522,6 @@ class WithdrawModal(ui.Modal, title="📤 DAB - Retrait de billets"):
 
             await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
 
-            # PAS DE LOG PUBLIC POUR LES RETRAITS (uniquement les dépôts)
             await interaction.followup.send(
                 f"💸 **[BILLETS DISTRIBUÉS]** Veuillez récupérer vos"
                 f" {format_currency(val)}.",
@@ -1530,18 +1643,20 @@ class TavernDuelBetModal(ui.Modal, title="⚔️ Tavernier - Configuration du Du
             return await interaction.followup.send(f"❌ {self.opponent.mention} n'a pas assez d'argent dans son portefeuille pour accepter cette mise.", ephemeral=True)
 
         game_name = "Dés du Destin" if self.game_type == "dice" else "Pierre-Feuille-Ciseaux"
-        view = DuelAcceptView(interaction.user, self.opponent, self.game_type, bet)
-
+        view = DuelAcceptView(interaction.user, self.opponent, self.game_type, bet, from_jim=True)
+        
         embed = discord.Embed(
             title="⚔️ DÉFI DE DUEL (TAVERNE)",
             description=(
                 f"{interaction.user.mention} défie {self.opponent.mention} à un duel de **{game_name}** sous l'œil de Jim !\n\n"
                 f"💰 **Mise en jeu** : `{format_currency(bet)}` par joueur\n\n"
-                f"{self.opponent.mention}, acceptez-vous ce défi ?"
+                f"{self.opponent.mention}, acceptez-vous ce défi ?\n\n"
+                f"⏰ Vous avez **30 secondes** pour répondre !"
             ),
             color=discord.Color.dark_red()
         )
-        await interaction.followup.send(content=self.opponent.mention, embed=embed, view=view)
+        msg = await interaction.followup.send(content=self.opponent.mention, embed=embed, view=view)
+        view.message = msg
 
 
 class TavernDuelSelect(ui.UserSelect):
@@ -1652,7 +1767,6 @@ class JimTavernView(ui.View):
 
         await check_and_unlock_achievements(user_id, bot_client=bot)
 
-        # ENVOI PUBLIC DANS LE SALON B
         await send_public_log(
             content=f"🍺 **{interaction.user.display_name}** a commandé une pinte chez Jim ! (#{beers_today}/5) {outcome}"
         )
@@ -1712,7 +1826,6 @@ class JohnRobSelect(ui.UserSelect):
             update_wallet(user_id, stolen)
             await check_and_unlock_achievements(user_id, bot_client=bot)
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"🥷 **{interaction.user.display_name}** a volé **{format_currency(stolen)}** à {victim.display_name} !"
             )
@@ -1752,7 +1865,6 @@ class BrinksVaultModal(ui.Modal, title="🔒 Coffre de la Brinks - Code à 4 chi
             update_wallet(user_id, self.prize)
             await check_and_unlock_achievements(user_id, bot_client=bot)
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"🔐 **{interaction.user.display_name}** a réussi le braquage de la Brinks ! Il a empoché **{format_currency(self.prize)}** !"
             )
@@ -1795,6 +1907,10 @@ class BrinksVaultModal(ui.Modal, title="🔒 Coffre de la Brinks - Code à 4 chi
                     cursor = conn.cursor()
                     cursor.execute("UPDATE users SET bank = bank - ? WHERE user_id = ?", (fine, user_id))
                     conn.commit()
+
+            await send_public_log(
+                content=f"🚨 **{interaction.user.display_name}** s'est fait prendre lors d'un braquage de la Brinks ! Amende : **-{format_currency(fine)}**"
+            )
 
             embed = discord.Embed(
                 title="🚨 [BRINKS] ARRIVÉE DE LA POLICE !",
@@ -1842,7 +1958,6 @@ class JohnCrimeView(ui.View):
             update_wallet(user_id, gain)
             await check_and_unlock_achievements(user_id, bot_client=bot)
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"🥷 **{interaction.user.display_name}** a réussi un crime et a gagné **{format_currency(gain)}** !"
             )
@@ -1852,6 +1967,9 @@ class JohnCrimeView(ui.View):
             loss = min(random.randint(100, 400), wallet)
             if loss > 0:
                 update_wallet(user_id, -loss)
+                await send_public_log(
+                    content=f"🚨 **{interaction.user.display_name}** s'est fait prendre par la milice lors d'un crime ! Amende : **-{format_currency(loss)}**"
+                )
                 await interaction.followup.send(f"🚨 **[JOHN LE BRIGAND]** La milice t'a repéré ! Amende : -**{format_currency(loss)}**", ephemeral=True)
             else:
                 await interaction.followup.send("🚨 **[JOHN LE BRIGAND]** Pris la main dans le sac, mais tu es trop pauvre pour payer.", ephemeral=True)
@@ -1948,7 +2066,6 @@ class ArenaFightView(ui.View):
             update_game_stats(self.user_id, won=True)
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"⚔️ **{interaction.user.display_name}** a vaincu Bob dans l'arène et remporte **{format_currency(gain)}** !"
             )
@@ -1975,7 +2092,6 @@ class ArenaFightView(ui.View):
             update_wallet(self.user_id, -self.bet)
             update_game_stats(self.user_id, won=False)
             
-            # ENVOI PUBLIC DANS LE SALON B (défaite)
             await send_public_log(
                 content=f"💀 **{interaction.user.display_name}** a été vaincu par Bob dans l'arène ! (-{format_currency(self.bet)})"
             )
@@ -2092,191 +2208,25 @@ class ArenaDuelBetModal(ui.Modal, title="⚔️ Arène - Mise du Duel"):
         if wallet_opp < bet:
             return await interaction.followup.send(f"❌ {self.opponent.mention} n'a pas assez d'argent dans son portefeuille pour accepter ce duel.", ephemeral=True)
 
-        view = ArenaDuelAcceptView(interaction.user, self.opponent, bet)
+        view = DuelAcceptView(interaction.user, self.opponent, "dice", bet, from_jim=False)
+        
         embed = discord.Embed(
             title="⚔️ DÉFI DE L'ARÈNE",
             description=(
                 f"{interaction.user.mention} défie {self.opponent.mention} en duel dans l'arène de Bob !\n\n"
                 f"💰 **Mise en jeu** : `{format_currency(bet)}` par joueur\n\n"
-                f"{self.opponent.mention}, acceptez-vous ce combat ?"
+                f"{self.opponent.mention}, acceptez-vous ce combat ?\n\n"
+                f"⏰ Vous avez **30 secondes** pour répondre !"
             ),
             color=discord.Color.dark_gold()
         )
-        await interaction.followup.send(content=self.opponent.mention, embed=embed, view=view)
+        msg = await interaction.followup.send(content=self.opponent.mention, embed=embed, view=view)
+        view.message = msg
 
 
-class ArenaDuelAcceptView(ui.View):
-    def __init__(self, challenger: discord.Member, opponent: discord.Member, bet: int):
-        super().__init__(timeout=60)
-        self.challenger = challenger
-        self.opponent = opponent
-        self.bet = bet
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.opponent.id:
-            await interaction.response.send_message("❌ Ce n'est pas à vous d'accepter ce duel !", ephemeral=True)
-            return False
-        return True
-
-    @ui.button(label="Accepter le Duel", style=discord.ButtonStyle.success, emoji="✅")
-    async def accept(self, interaction: discord.Interaction, button: ui.Button):
-        wallet_opp, _, _, _, _, _, _, _, _ = get_user(self.opponent.id)
-        wallet_chal, _, _, _, _, _, _, _, _ = get_user(self.challenger.id)
-
-        if wallet_opp < self.bet:
-            return await interaction.response.send_message("❌ Vous n'avez pas assez d'argent dans votre portefeuille pour accepter ce duel.", ephemeral=True)
-        if wallet_chal < self.bet:
-            return await interaction.response.send_message(f"❌ {self.challenger.mention} n'a plus assez d'argent pour honorer le duel.", ephemeral=True)
-
-        for child in self.children:
-            child.disabled = True
-
-        update_quest_progress(self.challenger.id, "duel_played", 1)
-        update_quest_progress(self.opponent.id, "duel_played", 1)
-
-        view = ArenaPvPView(self.challenger, self.opponent, self.bet)
-        embed = view.build_embed("⚔️ Le duel commence ! Chaque combattant doit choisir son action en secret.")
-        await interaction.response.edit_message(embed=embed, view=view)
-
-    @ui.button(label="Refuser", style=discord.ButtonStyle.danger, emoji="❌")
-    async def decline(self, interaction: discord.Interaction, button: ui.Button):
-        for child in self.children:
-            child.disabled = True
-        embed = discord.Embed(
-            title="⚔️ Duel Refusé",
-            description=f"{self.opponent.mention} a décliné le duel proposé par {self.challenger.mention}.",
-            color=discord.Color.red()
-        )
-        await interaction.response.edit_message(embed=embed, view=self)
-
-
-class ArenaPvPView(ui.View):
-    def __init__(self, challenger: discord.Member, opponent: discord.Member, bet: int):
-        super().__init__(timeout=120)
-        self.challenger = challenger
-        self.opponent = opponent
-        self.bet = bet
-        self.hp = {challenger.id: 100, opponent.id: 100}
-        self.moves = {}
-        self.round_num = 1
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id not in (self.challenger.id, self.opponent.id):
-            await interaction.response.send_message("❌ Ce duel ne vous concerne pas !", ephemeral=True)
-            return False
-        if interaction.user.id in self.moves:
-            await interaction.response.send_message("❌ Vous avez déjà choisi votre action pour ce round !", ephemeral=True)
-            return False
-        return True
-
-    def build_embed(self, status_msg: str, color=discord.Color.dark_gold()) -> discord.Embed:
-        desc = (
-            f"⚔️ **DUEL DE L'ARÈNE — Round {self.round_num}** ⚔️\n\n"
-            f"👤 **{self.challenger.display_name}** : `{'❤️' * max(0, int(self.hp[self.challenger.id] / 10))}` ({self.hp[self.challenger.id]}/100)\n"
-            f"👤 **{self.opponent.display_name}** : `{'❤️' * max(0, int(self.hp[self.opponent.id] / 10))}` ({self.hp[self.opponent.id]}/100)\n\n"
-            f"📜 *Déroulement* : {status_msg}"
-        )
-        embed = discord.Embed(title="🏟️ Arène des Sceaux - Duel PvP", description=desc, color=color)
-        embed.set_footer(text=f"Mise en jeu : {format_currency(self.bet)}")
-        return embed
-
-    def _resolve_damage(self, attacker_move: str, defender_move: str) -> int:
-        if attacker_move == "heavy":
-            dmg = random.randint(18, 32) if random.random() < 0.6 else 0
-        elif attacker_move == "fast":
-            dmg = random.randint(10, 18)
-        else:
-            dmg = 0
-
-        if defender_move == "parry":
-            if attacker_move == "heavy":
-                dmg = 0
-            elif attacker_move == "fast":
-                dmg = dmg // 2
-        return dmg
-
-    async def process_choice(self, interaction: discord.Interaction, move: str):
-        self.moves[interaction.user.id] = move
-        emojis = {"heavy": "🪓 Frappe Lourde", "fast": "🗡️ Estoc Rapide", "parry": "🛡️ Posture Défensive"}
-        await interaction.response.send_message(f"🔒 Action enregistrée : **{emojis[move]}**.", ephemeral=True)
-
-        if len(self.moves) < 2:
-            return
-
-        chal_move = self.moves[self.challenger.id]
-        opp_move = self.moves[self.opponent.id]
-        emojis_map = {"heavy": "🪓 Frappe Lourde", "fast": "🗡️ Estoc Rapide", "parry": "🛡️ Posture Défensive"}
-
-        dmg_to_opponent = self._resolve_damage(chal_move, opp_move)
-        dmg_to_challenger = self._resolve_damage(opp_move, chal_move)
-
-        self.hp[self.opponent.id] = max(0, self.hp[self.opponent.id] - dmg_to_opponent)
-        self.hp[self.challenger.id] = max(0, self.hp[self.challenger.id] - dmg_to_challenger)
-
-        round_text = (
-            f"{self.challenger.mention} choisit `{emojis_map[chal_move]}` (-{dmg_to_opponent} PV à l'adversaire)\n"
-            f"{self.opponent.mention} choisit `{emojis_map[opp_move]}` (-{dmg_to_challenger} PV à l'adversaire)"
-        )
-
-        chal_dead = self.hp[self.challenger.id] <= 0
-        opp_dead = self.hp[self.opponent.id] <= 0
-
-        if chal_dead or opp_dead:
-            for child in self.children:
-                child.disabled = True
-
-            if chal_dead and opp_dead:
-                res_text = "\n\n🤝 **ÉGALITÉ SANGLANTE !** Les deux combattants s'effondrent, les mises sont remboursées."
-                color = discord.Color.greyple()
-            elif opp_dead:
-                update_wallet(self.challenger.id, self.bet)
-                update_wallet(self.opponent.id, -self.bet)
-                update_game_stats(self.challenger.id, won=True)
-                update_game_stats(self.opponent.id, won=False)
-                await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
-                
-                # ENVOI PUBLIC DANS LE SALON B
-                await send_public_log(
-                    content=f"⚔️ **{self.challenger.display_name}** a remporté un duel PvP contre {self.opponent.display_name} et gagne **{format_currency(self.bet)}** !"
-                )
-                
-                res_text = f"\n\n🏆 **VICTOIRE de {self.challenger.mention} !** Il remporte **{format_currency(self.bet)}**."
-                color = discord.Color.green()
-            else:
-                update_wallet(self.opponent.id, self.bet)
-                update_wallet(self.challenger.id, -self.bet)
-                update_game_stats(self.opponent.id, won=True)
-                update_game_stats(self.opponent.id, won=False)
-                await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
-                
-                # ENVOI PUBLIC DANS LE SALON B
-                await send_public_log(
-                    content=f"⚔️ **{self.opponent.display_name}** a remporté un duel PvP contre {self.challenger.display_name} et gagne **{format_currency(self.bet)}** !"
-                )
-                
-                res_text = f"\n\n🏆 **VICTOIRE de {self.opponent.mention} !** Il remporte **{format_currency(self.bet)}**."
-                color = discord.Color.green()
-
-            embed = self.build_embed(round_text + res_text, color=color)
-            return await interaction.message.edit(embed=embed, view=self)
-
-        self.moves = {}
-        self.round_num += 1
-        embed = self.build_embed(round_text + "\n\n➡️ Round suivant : choisissez votre prochaine action !")
-        await interaction.message.edit(embed=embed, view=self)
-
-    @ui.button(label="Frappe Lourde (60%)", style=discord.ButtonStyle.danger, emoji="🪓")
-    async def heavy_strike(self, interaction: discord.Interaction, button: ui.Button):
-        await self.process_choice(interaction, "heavy")
-
-    @ui.button(label="Estoc Rapide (100%)", style=discord.ButtonStyle.primary, emoji="🗡️")
-    async def fast_strike(self, interaction: discord.Interaction, button: ui.Button):
-        await self.process_choice(interaction, "fast")
-
-    @ui.button(label="Posture Défensive", style=discord.ButtonStyle.secondary, emoji="🛡️")
-    async def parry_stance(self, interaction: discord.Interaction, button: ui.Button):
-        await self.process_choice(interaction, "parry")
-
+# ==========================================
+# 8. SUITE DES INTERFACES ET COMMANDES
+# ==========================================
 
 PMU_ODDS = {1: 3.0, 2: 3.0, 3: 3.0, 4: 3.0}
 
@@ -2335,7 +2285,6 @@ async def run_pmu_game(interaction: discord.Interaction, cheval: int, bet: int):
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         res_msg = f"🏆 **[PMU] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! Ton pari sur **{chevaux[cheval]['nom']}** (cote x{cote}) passe haut la main ! +**{format_currency(gain)}**"
         
-        # ENVOI PUBLIC DANS LE SALON B
         await send_public_log(
             content=f"🏇 **{interaction.user.display_name}** a gagné un pari PMU sur **{chevaux[cheval]['nom']}** (x{cote}) et remporte **{format_currency(gain)}** !"
         )
@@ -2344,7 +2293,6 @@ async def run_pmu_game(interaction: discord.Interaction, cheval: int, bet: int):
         update_game_stats(interaction.user.id, won=False)
         res_msg = f"❌ **[PMU] PERDU !** C'est #{gagnant} ({chevaux[gagnant]['nom']}) qui a gagné. Ton pari sur **{chevaux[cheval]['nom']}** (cote x{cote}) est perdant. -**{format_currency(bet)}**"
         
-        # ENVOI PUBLIC DANS LE SALON B
         await send_public_log(
             content=f"🏇 **{interaction.user.display_name}** a perdu un pari PMU sur **{chevaux[cheval]['nom']}** (x{cote}). Perte : **{format_currency(bet)}**"
         )
@@ -2392,7 +2340,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
     piste_len = 10
     positions = {1: 0, 2: 0, 3: 0, 4: 0}
 
-    # Envoyer UN SEUL message initial
+    # Envoyer UN SEUL message initial avec les boutons CONSERVÉS
     initial_piste = "🏁 **Brook - Départ de la course PMU !** Les chevaux s'élancent...\n```text\n┌── HIPPODROME ────────┐\n"
     for cid, data in chevaux.items():
         initial_piste += f"│#{cid}[{data['emoji']}{'-'*piste_len}]│\n"
@@ -2435,7 +2383,6 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         res_msg = f"🏆 **[BROOK LA BOOKMAKEUSE] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! Ton pari sur **{chevaux[horse_choice]['nom']}** (cote x{cote}) passe haut la main ! +**{format_currency(gain)}**"
         
-        # ENVOI PUBLIC DANS LE SALON B
         await send_public_log(
             content=f"🏇 **{interaction.user.display_name}** a gagné un pari Brook sur **{chevaux[horse_choice]['nom']}** (x{cote}) et remporte **{format_currency(gain)}** !"
         )
@@ -2444,7 +2391,6 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         update_game_stats(interaction.user.id, won=False)
         res_msg = f"❌ **[BROOK LA BOOKMAKEUSE] PERDU !** C'est #{gagnant} ({chevaux[gagnant]['nom']}) qui a gagné. Ton pari sur **{chevaux[horse_choice]['nom']}** (cote x{cote}) est perdant. -**{format_currency(bet)}**"
         
-        # ENVOI PUBLIC DANS LE SALON B
         await send_public_log(
             content=f"🏇 **{interaction.user.display_name}** a perdu un pari Brook sur **{chevaux[horse_choice]['nom']}** (x{cote}). Perte : **{format_currency(bet)}**"
         )
@@ -2465,7 +2411,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
     else:
         await anim_manager.update_animation(new_content=final_piste)
 
-    # Met à jour les cotes du panneau Brook
+    # Met à jour les cotes du panneau Brook (avec les boutons qui restent)
     new_odds = generate_brook_odds()
     file_brook = discord.File("assets/brook.png", filename="brook.png") if os.path.exists("assets/brook.png") else None
     new_embed = discord.Embed(
@@ -2526,7 +2472,7 @@ class BrookBookmakerView(ui.View):
 
 
 # ==========================================
-# 8. COMMANDES D'ÉCONOMIE, BANQUE & ADMIN
+# 9. COMMANDES D'ÉCONOMIE, BANQUE & ADMIN
 # ==========================================
 
 @bot.tree.command(name="banque", description="Accéder au Distributeur Automatique de Billets (DAB)")
@@ -2578,18 +2524,20 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, game:
         return await interaction.followup.send(f"❌ {opponent.mention} n'a pas assez d'argent dans son portefeuille pour accepter cette mise.", ephemeral=True)
 
     game_name = "Dés du Destin" if game == "dice" else "Pierre-Feuille-Ciseaux"
-    view = DuelAcceptView(interaction.user, opponent, game, bet)
+    view = DuelAcceptView(interaction.user, opponent, game, bet, from_jim=True)
 
     embed = discord.Embed(
         title="⚔️ DÉFI DE DUEL",
         description=(
             f"{interaction.user.mention} défie {opponent.mention} à un duel de **{game_name}** !\n\n"
             f"💰 **Mise en jeu** : `{format_currency(bet)}` par joueur\n\n"
-            f"{opponent.mention}, acceptez-vous ce défi ?"
+            f"{opponent.mention}, acceptez-vous ce défi ?\n\n"
+            f"⏰ Vous avez **30 secondes** pour répondre !"
         ),
         color=discord.Color.dark_red()
     )
-    await interaction.followup.send(content=opponent.mention, embed=embed, view=view)
+    msg = await interaction.followup.send(content=opponent.mention, embed=embed, view=view)
+    view.message = msg
 
 
 @bot.tree.command(name="pmu", description="Parie sur une course de chevaux rapide (PMU)")
@@ -2961,7 +2909,6 @@ async def work(interaction: discord.Interaction):
     update_quest_progress(user_id, "work_done", 1)
     await check_and_unlock_achievements(user_id, bot_client=bot)
 
-    # ENVOI PUBLIC DANS LE SALON B
     await send_public_log(
         content=f"💼 **{interaction.user.display_name}** a travaillé et gagné **{format_currency(gain)}** !"
     )
@@ -2995,7 +2942,6 @@ async def pay(interaction: discord.Interaction, receiver: discord.Member, amount
     update_wallet(receiver.id, amount)
     update_quest_progress(interaction.user.id, "pay_sent", 1)
     
-    # ENVOI PUBLIC DANS LE SALON B
     await send_public_log(
         content=f"💸 **{interaction.user.display_name}** a envoyé **{format_currency(amount)}** à {receiver.display_name} !"
     )
@@ -3356,7 +3302,7 @@ async def toggle_cooldowns(interaction: discord.Interaction):
 
 
 # ==========================================
-# 9. JEUX DE CASINO & LOGIQUES DE LANCEMENT
+# 10. JEUX DE CASINO
 # ==========================================
 
 class BlackjackGame:
@@ -3458,7 +3404,6 @@ class BlackjackView(ui.View):
             update_game_stats(self.game.user_id, won=True)
             await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"🃏 **{interaction.user.display_name}** a fait un Blackjack ! +**{format_currency(gain)}**"
             )
@@ -3472,7 +3417,6 @@ class BlackjackView(ui.View):
             update_wallet(self.game.user_id, -self.game.bet)
             update_game_stats(self.game.user_id, won=False)
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"🃏 **{interaction.user.display_name}** a fait un BUST au Blackjack ! -**{format_currency(self.game.bet)}**"
             )
@@ -3501,7 +3445,6 @@ class BlackjackView(ui.View):
             await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
             res = f"🎉 Banque > 21 ! +{format_currency(gain)}"
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"🃏 **{interaction.user.display_name}** a gagné au Blackjack ! +**{format_currency(gain)}**"
             )
@@ -3512,7 +3455,6 @@ class BlackjackView(ui.View):
             await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
             res = f"🎉 Gagné ! +{format_currency(gain)}"
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"🃏 **{interaction.user.display_name}** a gagné au Blackjack ! +**{format_currency(gain)}**"
             )
@@ -3521,7 +3463,6 @@ class BlackjackView(ui.View):
             update_game_stats(self.game.user_id, won=False)
             res = "❌ Perdu !"
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"🃏 **{interaction.user.display_name}** a perdu au Blackjack ! -**{format_currency(self.game.bet)}**"
             )
@@ -3591,7 +3532,6 @@ async def run_slots_game(interaction: discord.Interaction, bet: int):
         update_game_stats(interaction.user.id, won=True)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         
-        # ENVOI PUBLIC DANS LE SALON B
         await send_public_log(
             content=f"🪙 **{interaction.user.display_name}** a fait un TRIPLE aux slots ! +**{format_currency(reward)}**"
         )
@@ -3602,7 +3542,6 @@ async def run_slots_game(interaction: discord.Interaction, bet: int):
         update_game_stats(interaction.user.id, won=True)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         
-        # ENVOI PUBLIC DANS LE SALON B
         await send_public_log(
             content=f"🪙 **{interaction.user.display_name}** a fait un DUO aux slots ! +**{format_currency(reward)}**"
         )
@@ -3611,7 +3550,6 @@ async def run_slots_game(interaction: discord.Interaction, bet: int):
         update_wallet(interaction.user.id, -bet)
         update_game_stats(interaction.user.id, won=False)
         
-        # ENVOI PUBLIC DANS LE SALON B
         await send_public_log(
             content=f"🪙 **{interaction.user.display_name}** a perdu aux slots ! -**{format_currency(bet)}**"
         )
@@ -3692,7 +3630,6 @@ class DiceView(ui.View):
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             status = f"VICTOIRE! +{format_currency(self.bet)}"
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"🎲 **{interaction.user.display_name}** a gagné aux dés ! +**{format_currency(self.bet)}**"
             )
@@ -3701,7 +3638,6 @@ class DiceView(ui.View):
             update_game_stats(self.user_id, won=False)
             status = f"PERDU! -{format_currency(self.bet)}"
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"🎲 **{interaction.user.display_name}** a perdu aux dés ! -**{format_currency(self.bet)}**"
             )
@@ -3800,7 +3736,6 @@ class RouletteView(ui.View):
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             status = f"GAGNÉ! +{format_currency(reward)}"
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"🎡 **{interaction.user.display_name}** a gagné à la roulette ({color}) ! +**{format_currency(reward)}**"
             )
@@ -3809,7 +3744,6 @@ class RouletteView(ui.View):
             update_game_stats(self.user_id, won=False)
             status = f"PERDU! -{format_currency(self.bet)}"
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"🎡 **{interaction.user.display_name}** a perdu à la roulette ({choice}) ! -**{format_currency(self.bet)}**"
             )
@@ -3886,6 +3820,11 @@ class RussianRouletteView(ui.View):
                 child.disabled = True
             update_wallet(self.user_id, -self.bet)
             update_game_stats(self.user_id, won=False)
+            
+            await send_public_log(
+                content=f"🔫 **{interaction.user.display_name}** s'est fait tirer dessus à la roulette russe ! -**{format_currency(self.bet)}**"
+            )
+            
             display = (
                 "```ansi\n"
                 "\u001b[1;31m┌──────────────────────┐\n"
@@ -3911,6 +3850,11 @@ class RussianRouletteView(ui.View):
             update_wallet(self.user_id, total_gain)
             update_game_stats(self.user_id, won=True)
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
+            
+            await send_public_log(
+                content=f"🔫 **{interaction.user.display_name}** a survécu à 5 tirs de roulette russe et remporte **{format_currency(total_gain)}** !"
+            )
+            
             display = (
                 "```ansi\n"
                 "\u001b[1;33m┌──────────────────────┐\n"
@@ -3924,12 +3868,6 @@ class RussianRouletteView(ui.View):
                 "\u001b[1;33m└──────────────────────┘\u001b[0m\n"
                 "```"
             )
-            
-            # ENVOI PUBLIC DANS LE SALON B
-            await send_public_log(
-                content=f"🔫 **{interaction.user.display_name}** a survécu à 5 tirs de roulette russe et remporte **{format_currency(total_gain)}** !"
-            )
-            
             await interaction.response.edit_message(content=display, view=self)
             self.stop()
             return
@@ -3961,7 +3899,6 @@ class RussianRouletteView(ui.View):
         update_game_stats(self.user_id, won=True)
         await check_and_unlock_achievements(self.user_id, bot_client=bot)
         
-        # ENVOI PUBLIC DANS LE SALON B
         await send_public_log(
             content=f"🔫 **{interaction.user.display_name}** a encaissé après {self.current_shot} tirs de roulette russe ! +**{format_currency(won)}**"
         )
@@ -4085,7 +4022,6 @@ class PFCView(ui.View):
             res = "🎉 Gagné !"
             face = "(^o^) 🏆"
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"✂️ **{interaction.user.display_name}** a gagné au PFC ! +**{format_currency(self.bet)}**"
             )
@@ -4095,7 +4031,6 @@ class PFCView(ui.View):
             res = "❌ Perdu !"
             face = "(T_T) 💀"
             
-            # ENVOI PUBLIC DANS LE SALON B
             await send_public_log(
                 content=f"✂️ **{interaction.user.display_name}** a perdu au PFC ! -**{format_currency(self.bet)}**"
             )
@@ -4165,7 +4100,6 @@ async def run_poker_game(interaction: discord.Interaction, mise: int):
         update_game_stats(interaction.user.id, won=True)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         
-        # ENVOI PUBLIC DANS LE SALON B
         await send_public_log(
             content=f"⚜️ **{interaction.user.display_name}** a fait un {res} au poker ! +**{format_currency(gain)}**"
         )
@@ -4173,7 +4107,6 @@ async def run_poker_game(interaction: discord.Interaction, mise: int):
         update_wallet(interaction.user.id, -mise)
         update_game_stats(interaction.user.id, won=False)
         
-        # ENVOI PUBLIC DANS LE SALON B
         await send_public_log(
             content=f"⚜️ **{interaction.user.display_name}** a perdu au poker ({res}) ! -**{format_currency(mise)}**"
         )
@@ -4206,191 +4139,20 @@ async def poker_solitaire(interaction: discord.Interaction):
 # SYSTÈME BOUTIQUE & GUILLAUME LE TROUBADOUR
 # =============================================================
 
-class PersistentTroubadourView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @ui.button(label="Parler à Guillaume", style=discord.ButtonStyle.success, emoji="🪕", custom_id="persistent_troubadour_talk_main")
-    async def talk_to_troubadour(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer(ephemeral=True)
-
-        if not isinstance(interaction.user, discord.Member):
-            return await interaction.followup.send("❌ Erreur.", ephemeral=True)
-
-        view = TroubadourPaginationView(interaction.user, current_ep=1)
-        await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
-
-
-class TroubadourPaginationView(ui.View):
-    def __init__(self, member: discord.Member, current_ep: int = 1):
-        super().__init__(timeout=120)
-        self.member = member
-        self.current_ep = current_ep
-        self.update_components()
-
-    def update_components(self):
-        self.clear_items()
-
-        prev_btn = ui.Button(label="◀️ Précédent", style=discord.ButtonStyle.secondary, disabled=(self.current_ep <= 1), row=0)
-        prev_btn.callback = self.prev_callback
-        self.add_item(prev_btn)
-
-        page_indicator = ui.Button(label=f"Épisode {self.current_ep} / {TOTAL_EPISODES}", style=discord.ButtonStyle.blurple, disabled=True, row=0)
-        self.add_item(page_indicator)
-
-        next_btn = ui.Button(label="Suivant ▶️", style=discord.ButtonStyle.secondary, disabled=(self.current_ep >= TOTAL_EPISODES), row=0)
-        next_btn.callback = self.next_callback
-        self.add_item(next_btn)
-
-        has_story = EPISODES_LOADED and self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
-
-        if not has_story:
-            rest_btn = ui.Button(label="💤 Le troubadour se repose, revenez plus tard", style=discord.ButtonStyle.danger, disabled=True, row=1)
-            self.add_item(rest_btn)
-            return
-
-        user_id = self.member.id
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM story_progress WHERE user_id = ? AND episode_id = ?", (user_id, self.current_ep))
-        is_unlocked = cursor.fetchone() is not None
-
-        if self.current_ep == 1:
-            has_all_items = True
-        else:
-            prev_ep = self.current_ep - 1
-            cursor.execute("SELECT name FROM shop_items WHERE shop_type='episode' AND episode=?", (prev_ep,))
-            prev_ep_items = [row[0] for row in cursor.fetchall()]
-
-            has_all_items = False
-            if prev_ep_items:
-                cursor.execute("""
-                    SELECT COUNT(*) FROM inventory 
-                    WHERE user_id = ? AND item_name IN ({}) AND quantity > 0
-                """.format(','.join(['?']*len(prev_ep_items))), [user_id] + prev_ep_items)
-                owned_count = cursor.fetchone()[0]
-                if owned_count >= len(prev_ep_items):
-                    has_all_items = True
-        conn.close()
-
-        if is_unlocked:
-            listen_btn = ui.Button(label="📖 Écouter / Relire l'histoire", style=discord.ButtonStyle.success, emoji="📜", row=1)
-            listen_btn.callback = self.listen_callback
-            self.add_item(listen_btn)
-        elif self.current_ep == 1:
-            listen_btn = ui.Button(label="📖 Écouter l'Histoire (Gratuit)", style=discord.ButtonStyle.success, emoji="📜", row=1)
-            listen_btn.callback = self.listen_callback
-            self.add_item(listen_btn)
-        elif has_all_items:
-            give_btn = ui.Button(label="🎁 Donner les reliques & Écouter", style=discord.ButtonStyle.primary, emoji="✨", row=1)
-            give_btn.callback = self.give_callback
-            self.add_item(give_btn)
-        else:
-            lock_btn = ui.Button(label="🔒 Épisode Verrouillé (Reliques précédentes manquantes)", style=discord.ButtonStyle.danger, disabled=True, row=1)
-            self.add_item(lock_btn)
-
-    async def prev_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.member.id:
-            return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
-        if self.current_ep > 1:
-            self.current_ep -= 1
-            self.update_components()
-            await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def next_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.member.id:
-            return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
-        if self.current_ep < TOTAL_EPISODES:
-            self.current_ep += 1
-            self.update_components()
-            await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def listen_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.member.id:
-            return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
-
-        story_text = EPISODE_STORIES.get(self.current_ep, "« Une histoire mystérieuse... »")
-        extra_txt = " (Offert à tous les voyageurs !)" if self.current_ep == 1 else " (Vous possédez déjà cet épisode dans vos archives permanentes.)"
-
-        embed = discord.Embed(
-            title=f"📜 Récit de {get_episode_title(self.current_ep)}",
-            description=f"{story_text}\n\n*✨ {extra_txt}*",
-            color=discord.Color.gold()
-        )
-        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    async def give_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.member.id:
-            return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
-
-        has_story = EPISODES_LOADED and self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
-        if not has_story:
-            return await interaction.response.send_message("❌ Le troubadour se repose, revenez plus tard !", ephemeral=True)
-
-        user_id = self.member.id
-        prev_ep = self.current_ep - 1
-
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM shop_items WHERE shop_type='episode' AND episode=?", (prev_ep,))
-        prev_ep_items = [row[0] for row in cursor.fetchall()]
-
-        cursor.execute("INSERT OR IGNORE INTO story_progress (user_id, episode_id) VALUES (?, ?)", (user_id, self.current_ep))
-
-        for item in prev_ep_items:
-            cursor.execute("DELETE FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item))
-        conn.commit()
-        conn.close()
-
-        self.update_components()
-        story_text = EPISODE_STORIES.get(self.current_ep, "« Une histoire mystérieuse... »")
-
-        embed = discord.Embed(
-            title=f"📜 Récit de {get_episode_title(self.current_ep)}",
-            description=f"{story_text}\n\n*✨ (Guillaume a pris vos reliques de l'épisode {prev_ep} et a sauvegardé cet épisode à vie dans vos archives !) *",
-            color=discord.Color.gold()
-        )
-        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
-
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    def build_embed(self) -> discord.Embed:
-        has_story = EPISODES_LOADED and self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
-
-        if not has_story:
-            status_txt = "💤 **[Le troubadour se repose, revenez plus tard]**"
-        elif self.current_ep == 1:
-            status_txt = "📖 **[Épisode Gratuit & Accessible]**"
-        else:
-            user_id = self.member.id
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1 FROM story_progress WHERE user_id = ? AND episode_id = ?", (user_id, self.current_ep))
-            is_unlocked = cursor.fetchone() is not None
-            conn.close()
-
-            status_txt = "📖 **[Débloqué & Sauvegardé]**" if is_unlocked else f"🔒 **[Verrouillé / Reliques de l'épisode {self.current_ep - 1} requises]**"
-
-        embed = discord.Embed(
-            title=f"🪕 Guillaume le Troubadour — {get_episode_title(self.current_ep)}",
-            description=(
-                f"Statut : {status_txt}\n\n"
-                "Utilisez les boutons ci-dessous pour naviguer entre les épisodes, donner vos reliques ou écouter les récits de votre choix !"
-            ),
-            color=discord.Color.purple()
-        )
-        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
-        return embed
-
-
-# --- VUE POUR LA BOUTIQUE DES ÉPISODES ---
+# --- VUE POUR LA BOUTIQUE DES ÉPISODES AVEC MÉMOIRE ---
 class EpisodeShopView(ui.View):
-    def __init__(self, member: discord.Member, episode_num: int):
+    def __init__(self, member: discord.Member, episode_num: int = None):
         super().__init__(timeout=120)
         self.member = member
+        
+        # Récupérer le dernier chapitre mémorisé
+        _, last_shop = get_user_last_chapter(member.id)
+        if episode_num is None:
+            episode_num = last_shop if last_shop else 1
         self.episode_num = episode_num
+        
+        # Sauvegarder le chapitre actuel
+        update_user_last_chapter(member.id, last_shop_episode=episode_num)
         self.load_items()
 
     def load_items(self):
@@ -4474,6 +4236,8 @@ class EpisodeShopView(ui.View):
             return await interaction.response.send_message("❌ Ce n'est pas votre boutique !", ephemeral=True)
 
         next_ep = self.episode_num + 1
+        # Sauvegarder le nouveau chapitre
+        update_user_last_chapter(self.member.id, last_shop_episode=next_ep)
         new_view = EpisodeShopView(self.member, next_ep)
 
         title = get_episode_title(next_ep)
@@ -4620,8 +4384,8 @@ class ShopDialogueView(ui.View):
         if interaction.user.id != self.member.id:
             return await interaction.response.send_message("❌ Ce n'est pas ton tour !", ephemeral=True)
 
-        current_ep = 1
-        view = EpisodeShopView(interaction.user, current_ep)
+        view = EpisodeShopView(interaction.user)
+        current_ep = view.episode_num
         title = get_episode_title(current_ep)
         embed = discord.Embed(title=f"📜 {title}", color=discord.Color.dark_teal())
         embed.description = "Achète tous les objets de cet épisode !"
@@ -4712,7 +4476,204 @@ class PersistentMerchantView(ui.View):
 
 
 # ==========================================
-# 8. COMMANDES ADMIN DE GESTION D'HISTOIRE / BOUTIQUE
+# SYSTÈME DE GUILLAUME LE TROUBADOUR AVEC MÉMOIRE
+# ==========================================
+
+class PersistentTroubadourView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Parler à Guillaume", style=discord.ButtonStyle.success, emoji="🪕", custom_id="persistent_troubadour_talk_main")
+    async def talk_to_troubadour(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        if not isinstance(interaction.user, discord.Member):
+            return await interaction.followup.send("❌ Erreur.", ephemeral=True)
+
+        # Récupérer le dernier chapitre mémorisé pour Guillaume
+        last_ep, _ = get_user_last_chapter(interaction.user.id)
+        view = TroubadourPaginationView(interaction.user, current_ep=last_ep if last_ep else 1)
+        await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
+
+
+class TroubadourPaginationView(ui.View):
+    def __init__(self, member: discord.Member, current_ep: int = 1):
+        super().__init__(timeout=120)
+        self.member = member
+        self.current_ep = current_ep
+        self.update_components()
+
+    def update_components(self):
+        self.clear_items()
+
+        prev_btn = ui.Button(label="◀️ Précédent", style=discord.ButtonStyle.secondary, disabled=(self.current_ep <= 1), row=0)
+        prev_btn.callback = self.prev_callback
+        self.add_item(prev_btn)
+
+        page_indicator = ui.Button(label=f"Épisode {self.current_ep} / {TOTAL_EPISODES}", style=discord.ButtonStyle.blurple, disabled=True, row=0)
+        self.add_item(page_indicator)
+
+        next_btn = ui.Button(label="Suivant ▶️", style=discord.ButtonStyle.secondary, disabled=(self.current_ep >= TOTAL_EPISODES), row=0)
+        next_btn.callback = self.next_callback
+        self.add_item(next_btn)
+
+        has_story = EPISODES_LOADED and self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
+
+        if not has_story:
+            rest_btn = ui.Button(label="💤 Le troubadour se repose, revenez plus tard", style=discord.ButtonStyle.danger, disabled=True, row=1)
+            self.add_item(rest_btn)
+            return
+
+        user_id = self.member.id
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM story_progress WHERE user_id = ? AND episode_id = ?", (user_id, self.current_ep))
+        is_unlocked = cursor.fetchone() is not None
+
+        if self.current_ep == 1:
+            has_all_items = True
+        else:
+            prev_ep = self.current_ep - 1
+            cursor.execute("SELECT name FROM shop_items WHERE shop_type='episode' AND episode=?", (prev_ep,))
+            prev_ep_items = [row[0] for row in cursor.fetchall()]
+
+            has_all_items = False
+            if prev_ep_items:
+                cursor.execute("""
+                    SELECT COUNT(*) FROM inventory 
+                    WHERE user_id = ? AND item_name IN ({}) AND quantity > 0
+                """.format(','.join(['?']*len(prev_ep_items))), [user_id] + prev_ep_items)
+                owned_count = cursor.fetchone()[0]
+                if owned_count >= len(prev_ep_items):
+                    has_all_items = True
+        conn.close()
+
+        if is_unlocked:
+            listen_btn = ui.Button(label="📖 Écouter / Relire l'histoire", style=discord.ButtonStyle.success, emoji="📜", row=1)
+            listen_btn.callback = self.listen_callback
+            self.add_item(listen_btn)
+        elif self.current_ep == 1:
+            listen_btn = ui.Button(label="📖 Écouter l'Histoire (Gratuit)", style=discord.ButtonStyle.success, emoji="📜", row=1)
+            listen_btn.callback = self.listen_callback
+            self.add_item(listen_btn)
+        elif has_all_items:
+            give_btn = ui.Button(label="🎁 Donner les reliques & Écouter", style=discord.ButtonStyle.primary, emoji="✨", row=1)
+            give_btn.callback = self.give_callback
+            self.add_item(give_btn)
+        else:
+            lock_btn = ui.Button(label="🔒 Épisode Verrouillé (Reliques précédentes manquantes)", style=discord.ButtonStyle.danger, disabled=True, row=1)
+            self.add_item(lock_btn)
+
+    async def prev_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.member.id:
+            return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
+        if self.current_ep > 1:
+            self.current_ep -= 1
+            # Sauvegarder le nouveau chapitre
+            update_user_last_chapter(self.member.id, last_episode=self.current_ep)
+            self.update_components()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def next_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.member.id:
+            return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
+        if self.current_ep < TOTAL_EPISODES:
+            self.current_ep += 1
+            # Sauvegarder le nouveau chapitre
+            update_user_last_chapter(self.member.id, last_episode=self.current_ep)
+            self.update_components()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def listen_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.member.id:
+            return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
+
+        story_text = EPISODE_STORIES.get(self.current_ep, "« Une histoire mystérieuse... »")
+        extra_txt = " (Offert à tous les voyageurs !)" if self.current_ep == 1 else " (Vous possédez déjà cet épisode dans vos archives permanentes.)"
+
+        embed = discord.Embed(
+            title=f"📜 Récit de {get_episode_title(self.current_ep)}",
+            description=f"{story_text}\n\n*✨ {extra_txt}*",
+            color=discord.Color.gold()
+        )
+        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def give_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.member.id:
+            return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
+
+        has_story = EPISODES_LOADED and self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
+        if not has_story:
+            return await interaction.response.send_message("❌ Le troubadour se repose, revenez plus tard !", ephemeral=True)
+
+        user_id = self.member.id
+        prev_ep = self.current_ep - 1
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM shop_items WHERE shop_type='episode' AND episode=?", (prev_ep,))
+        prev_ep_items = [row[0] for row in cursor.fetchall()]
+
+        cursor.execute("INSERT OR IGNORE INTO story_progress (user_id, episode_id) VALUES (?, ?)", (user_id, self.current_ep))
+
+        for item in prev_ep_items:
+            cursor.execute("DELETE FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item))
+        conn.commit()
+        conn.close()
+
+        # Sauvegarder le dernier chapitre débloqué
+        update_user_last_chapter(self.member.id, last_episode=self.current_ep)
+
+        self.update_components()
+        story_text = EPISODE_STORIES.get(self.current_ep, "« Une histoire mystérieuse... »")
+
+        # Envoyer un message dans le salon B
+        await send_public_log(
+            content=f"📜 **{self.member.display_name}** a débloqué le chapitre **{self.current_ep}** de l'histoire de Guillaume le Troubadour !"
+        )
+
+        embed = discord.Embed(
+            title=f"📜 Récit de {get_episode_title(self.current_ep)}",
+            description=f"{story_text}\n\n*✨ (Guillaume a pris vos reliques de l'épisode {prev_ep} et a sauvegardé cet épisode à vie dans vos archives !) *",
+            color=discord.Color.gold()
+        )
+        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
+
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    def build_embed(self) -> discord.Embed:
+        has_story = EPISODES_LOADED and self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
+
+        if not has_story:
+            status_txt = "💤 **[Le troubadour se repose, revenez plus tard]**"
+        elif self.current_ep == 1:
+            status_txt = "📖 **[Épisode Gratuit & Accessible]**"
+        else:
+            user_id = self.member.id
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM story_progress WHERE user_id = ? AND episode_id = ?", (user_id, self.current_ep))
+            is_unlocked = cursor.fetchone() is not None
+            conn.close()
+
+            status_txt = "📖 **[Débloqué & Sauvegardé]**" if is_unlocked else f"🔒 **[Verrouillé / Reliques de l'épisode {self.current_ep - 1} requises]**"
+
+        embed = discord.Embed(
+            title=f"🪕 Guillaume le Troubadour — {get_episode_title(self.current_ep)}",
+            description=(
+                f"Statut : {status_txt}\n\n"
+                "Utilisez les boutons ci-dessous pour naviguer entre les épisodes, donner vos reliques ou écouter les récits de votre choix !"
+            ),
+            color=discord.Color.purple()
+        )
+        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
+        return embed
+
+
+# ==========================================
+# 11. COMMANDES ADMIN DE GESTION D'HISTOIRE / BOUTIQUE
 # ==========================================
 
 @bot.tree.command(name="reset-story", description="[Admin] Réinitialise la progression des histoires et supprime les reliques des inventaires")
@@ -4723,10 +4684,11 @@ async def reset_story(interaction: discord.Interaction):
     cursor = conn.cursor()
     cursor.execute("DELETE FROM story_progress")
     cursor.execute("DELETE FROM inventory WHERE item_name LIKE '%Relique%'")
+    cursor.execute("DELETE FROM user_last_chapter")
     conn.commit()
     conn.close()
 
-    await interaction.followup.send("🔄 **Réinitialisation réussie !** Toutes les histoires validées et les reliques d'épisodes ont été remises à zéro pour les tests.", ephemeral=True)
+    await interaction.followup.send("🔄 **Réinitialisation réussie !** Toutes les histoires validées, les reliques d'épisodes et les mémoires ont été remises à zéro.", ephemeral=True)
 
 
 @bot.tree.command(name="inventory", description="Affiche ton inventaire d'achats")
@@ -4840,8 +4802,6 @@ async def _global_app_command_error(
             f"{type(send_error).__name__}: {send_error}"
         )
 
-# CommandTree utilise ce gestionnaire pour les erreurs qui surviennent
-# pendant l'exécution des commandes slash.
 bot.tree.on_error = _global_app_command_error
 
 
@@ -4853,15 +4813,9 @@ bot.tree.on_error = _global_app_command_error
 async def on_ready():
     print(f"🤖 Bot connecté en tant que {bot.user} (ID: {bot.user.id})")
     
-    # Chargement des succès depuis GitHub
     await load_achievements_from_github()
-    
-    # Chargement des épisodes depuis GitHub
     await load_episodes_from_github()
 
-    # ------------------------------------------
-    # BASE DE DONNÉES
-    # ------------------------------------------
     try:
         init_db()
         print("💾 Base économique /data/economy.db : OK")
@@ -4869,9 +4823,6 @@ async def on_ready():
         print(f"❌ ERREUR INIT BASE DE DONNÉES : {type(e).__name__}: {e}")
         traceback.print_exc()
 
-    # ------------------------------------------
-    # VUES PERSISTANTES
-    # ------------------------------------------
     if not getattr(bot, "_persistent_views_registered", False):
         try:
             bot.add_view(PersistentMerchantView())
@@ -4883,18 +4834,11 @@ async def on_ready():
             print(f"❌ ERREUR VUES PERSISTANTES : {type(e).__name__}: {e}")
             traceback.print_exc()
 
-    # ------------------------------------------
-    # SYNC DES COMMANDES SLASH - ATTENTE POUR ÉVITER LES RATE LIMITS
-    # ------------------------------------------
     try:
-        # Petit délai pour éviter les rate limits
         await asyncio.sleep(2)
-
-        # Synchronisation globale
         synced_global = await bot.tree.sync()
         print(f"🌲 {len(synced_global)} commandes slash synchronisées globalement.")
 
-        # Synchronisation par serveur
         for guild in bot.guilds:
             try:
                 bot.tree.copy_global_to(guild=guild)
@@ -4913,9 +4857,6 @@ async def on_ready():
         print(f"❌ ERREUR SYNCHRONISATION : {type(e).__name__}: {e}")
         traceback.print_exc()
 
-    # ------------------------------------------
-    # LISTE DES COMMANDES DISPONIBLES
-    # ------------------------------------------
     try:
         commands_list = [cmd.name for cmd in bot.tree.get_commands()]
         print(f"📋 Commandes disponibles : {', '.join(commands_list)}")
@@ -4926,7 +4867,7 @@ async def on_ready():
 
 
 # ==========================================
-# 10. LANCEMENT DU BOT
+# 12. LANCEMENT DU BOT
 # ==========================================
 
 if __name__ == "__main__":
