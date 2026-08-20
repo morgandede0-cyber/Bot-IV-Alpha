@@ -2314,6 +2314,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
     piste_len = 10
     positions = {1: 0, 2: 0, 3: 0, 4: 0}
 
+    # Envoyer UN SEUL message initial
     initial_piste = "🏁 **Brook - Départ de la course PMU !** Les chevaux s'élancent...\n```text\n┌── HIPPODROME ────────┐\n"
     for cid, data in chevaux.items():
         initial_piste += f"│#{cid}[{data['emoji']}{'-'*piste_len}]│\n"
@@ -2324,6 +2325,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
 
     weights = [round(10 / dynamic_odds[i], 2) for i in range(1, 5)]
 
+    # Animation : on met à jour le MÊME message
     while max(positions.values()) < piste_len:
         await asyncio.sleep(1.0)
         for c in positions:
@@ -2340,6 +2342,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         piste_str += "└──────────────────────┘\n```"
         await anim_manager.update_animation(new_content=piste_str)
 
+    # Résultat final - on met à jour le MÊME message
     max_p = max(positions.values())
     gagnants = [c for c, p in positions.items() if p >= max_p]
 
@@ -2365,6 +2368,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         final_piste += f"│#{cid}[{ligne}]│\n"
     final_piste += f"└──────────────────────┘\n```\n{res_msg}"
 
+    # Met à jour le message original avec le résultat final
     if not show_anim:
         try:
             await interaction.edit_original_response(content=final_piste)
@@ -2373,6 +2377,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
     else:
         await anim_manager.update_animation(new_content=final_piste)
 
+    # Met à jour les cotes du panneau Brook
     new_odds = generate_brook_odds()
     file_brook = discord.File("assets/brook.png", filename="brook.png") if os.path.exists("assets/brook.png") else None
     new_embed = discord.Embed(
