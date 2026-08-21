@@ -6,8 +6,8 @@ import random
 import time
 import sqlite3
 import traceback
-import aiohttp
 import json
+import aiohttp
 import discord
 from discord import app_commands, ui
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -52,6 +52,7 @@ async def send_public_log(content: str = None, embed: discord.Embed = None, file
                 print(f"❌ Erreur envoi log public : {e}")
     return None
 
+
 # ==========================================
 # 2. GESTIONNAIRE D'ANIMATION DE MESSAGE
 # ==========================================
@@ -71,7 +72,6 @@ class AnimatedMessageManager:
         if new_content != self.last_content or new_embed != self.last_embed:
             try:
                 if self.first_update:
-                    # Première mise à jour : on édite le message original
                     await self.interaction.edit_original_response(content=new_content, embed=new_embed, view=view)
                     self.first_update = False
                 else:
@@ -123,6 +123,37 @@ def init_db():
                 show_animations INTEGER DEFAULT 1
             )
         """)
+        
+        # ========== NOUVELLES TABLES POUR LES QUÊTES ==========
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS public_quests (
+                quest_date TEXT PRIMARY KEY,
+                quests_json TEXT,
+                generated_at INTEGER
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS player_quests (
+                user_id INTEGER,
+                quest_date TEXT,
+                quest_key TEXT,
+                progress INTEGER DEFAULT 0,
+                completed INTEGER DEFAULT 0,
+                claimed INTEGER DEFAULT 0,
+                PRIMARY KEY (user_id, quest_date, quest_key)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS quest_channels (
+                guild_id INTEGER PRIMARY KEY,
+                channel_id INTEGER,
+                message_id INTEGER
+            )
+        """)
+        
+        # Ancienne table des quêtes (gardée pour compatibilité)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS daily_quests (
                 user_id INTEGER,
@@ -251,6 +282,16 @@ def init_db():
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS quest_reward_state (
+                user_id INTEGER PRIMARY KEY,
+                base_reward INTEGER DEFAULT 0,
+                quest_date TEXT DEFAULT '',
+                quest_streak INTEGER DEFAULT 0,
+                last_claim_date TEXT DEFAULT ''
+            )
+        """)
+
         columns_to_add = [
             ("last_daily", "INTEGER DEFAULT 0"),
             ("streak", "INTEGER DEFAULT 0"),
@@ -356,6 +397,7 @@ def update_wallet(user_id: int, amount: int):
         conn.commit()
     if amount > 0:
         update_quest_progress(user_id, "money_earned", amount)
+        update_quest_progress_v2(user_id, "money_earned", amount)
 
 
 def update_game_stats(user_id: int, won: bool):
@@ -368,8 +410,10 @@ def update_game_stats(user_id: int, won: bool):
             cursor.execute("UPDATE users SET games_played = COALESCE(games_played, 0) + 1, games_lost = COALESCE(games_lost, 0) + 1 WHERE user_id = ?", (user_id,))
         conn.commit()
     update_quest_progress(user_id, "games_played", 1)
+    update_quest_progress_v2(user_id, "games_played", 1)
     if won:
         update_quest_progress(user_id, "games_won", 1)
+        update_quest_progress_v2(user_id, "games_won", 1)
 
 
 def format_currency(amount: int) -> str:
@@ -380,100 +424,303 @@ init_db()
 
 
 # ==========================================
-# 3.1. SYSTÈMES DE QUÊTES JOURNALIÈRES
+# 3.1. SYSTÈME DE QUÊTES PUBLIC (NOUVEAU)
 # ==========================================
 
 QUEST_POOL = [
     {
         "key": "games_played",
         "label": "🎲 Joueur Assidu",
-        "desc_tpl": "Jouer {target} partie(s) dans un jeu de casino (blackjack, dés, roulette, slots, PFC, poker...)",
-        "target_range": (3, 6),
-        "reward_range": (150, 300),
+        "desc": "Jouer {target} partie(s) dans un jeu de casino",
+        "target_range": (5, 10),
     },
     {
         "key": "games_won",
         "label": "🏆 Chanceux du Jour",
-        "desc_tpl": "Gagner {target} partie(s) dans n'importe quel jeu",
-        "target_range": (1, 3),
-        "reward_range": (200, 400),
+        "desc": "Gagner {target} partie(s) dans n'importe quel jeu",
+        "target_range": (3, 6),
     },
     {
         "key": "work_done",
         "label": "💼 Travailleur",
-        "desc_tpl": "Travailler {target} fois via /work",
-        "target_range": (1, 3),
-        "reward_range": (100, 250),
+        "desc": "Travailler {target} fois via /work",
+        "target_range": (2, 4),
     },
     {
         "key": "arena_fight",
         "label": "⚔️ Guerrier de l'Arène",
-        "desc_tpl": "Affronter Bob dans l'arène {target} fois",
-        "target_range": (1, 2),
-        "reward_range": (200, 400),
-    },
-    {
-        "key": "duel_played",
-        "label": "🤺 Duelliste",
-        "desc_tpl": "Faire {target} duel(s) PvP contre un ami (taverne ou arène)",
-        "target_range": (1, 2),
-        "reward_range": (250, 450),
-    },
-    {
-        "key": "bank_deposit",
-        "label": "🏦 Épargnant",
-        "desc_tpl": "Déposer de l'argent à la banque {target} fois",
-        "target_range": (1, 3),
-        "reward_range": (100, 200),
-    },
-    {
-        "key": "pay_sent",
-        "label": "💸 Généreux",
-        "desc_tpl": "Envoyer de l'argent à un ami via /pay {target} fois",
-        "target_range": (1, 2),
-        "reward_range": (100, 200),
-    },
-    {
-        "key": "crime_attempt",
-        "label": "🥷 Petite Frappe",
-        "desc_tpl": "Tenter ta chance chez John le Brigand {target} fois",
-        "target_range": (1, 3),
-        "reward_range": (150, 300),
-    },
-    {
-        "key": "pmu_bet",
-        "label": "🐎 Turfiste",
-        "desc_tpl": "Parier sur une course chez Brook {target} fois",
-        "target_range": (1, 3),
-        "reward_range": (150, 300),
-    },
-    {
-        "key": "vault_attempt",
-        "label": "🔐 Braqueur de Coffre",
-        "desc_tpl": "Tenter de braquer le coffre de la Brinks {target} fois",
-        "target_range": (1, 2),
-        "reward_range": (200, 400),
-    },
-    {
-        "key": "money_earned",
-        "label": "💰 Homme d'Affaires",
-        "desc_tpl": "Gagner un total de {target} $ (jeux, travail, duels...)",
-        "target_range": (500, 1500),
-        "reward_range": (200, 400),
+        "desc": "Affronter Bob dans l'arène {target} fois",
+        "target_range": (2, 4),
     },
     {
         "key": "beer_drunk",
         "label": "🍺 Bon Vivant",
-        "desc_tpl": "Commander {target} pinte(s) chez Jim le Tavernier",
+        "desc": "Commander {target} pinte(s) chez Jim",
+        "target_range": (2, 4),
+    },
+    {
+        "key": "pmu_bet",
+        "label": "🐎 Turfiste",
+        "desc": "Parier sur une course chez Brook {target} fois",
+        "target_range": (2, 4),
+    },
+    {
+        "key": "vault_attempt",
+        "label": "🔐 Braqueur de Coffre",
+        "desc": "Tenter de braquer la Brinks {target} fois",
         "target_range": (1, 3),
-        "reward_range": (100, 200),
+    },
+    {
+        "key": "crime_attempt",
+        "label": "🥷 Petite Frappe",
+        "desc": "Tenter un crime chez John {target} fois",
+        "target_range": (2, 4),
+    },
+    {
+        "key": "money_earned",
+        "label": "💰 Homme d'Affaires",
+        "desc": "Gagner un total de {target} $",
+        "target_range": (1000, 3000),
+    },
+    {
+        "key": "bank_deposit",
+        "label": "🏦 Épargnant",
+        "desc": "Déposer à la banque {target} fois",
+        "target_range": (2, 4),
+    },
+    {
+        "key": "pay_sent",
+        "label": "💸 Généreux",
+        "desc": "Envoyer de l'argent via /pay {target} fois",
+        "target_range": (1, 3),
+    },
+    {
+        "key": "blackjack_win",
+        "label": "👑 Roi du Blackjack",
+        "desc": "Gagner {target} partie(s) de Blackjack",
+        "target_range": (1, 3),
+    },
+    {
+        "key": "slots_win",
+        "label": "🪙 Maître des Slots",
+        "desc": "Gagner {target} partie(s) aux Slots",
+        "target_range": (1, 3),
+    },
+    {
+        "key": "roulette_win",
+        "label": "🎡 Prince de la Roulette",
+        "desc": "Gagner {target} partie(s) à la Roulette",
+        "target_range": (1, 3),
+    },
+    {
+        "key": "pfc_win",
+        "label": "✂️ Maître du PFC",
+        "desc": "Gagner {target} partie(s) au PFC",
+        "target_range": (1, 3),
+    },
+    {
+        "key": "poker_win",
+        "label": "⚜️ Noble du Poker",
+        "desc": "Gagner {target} partie(s) au Poker",
+        "target_range": (1, 3),
+    },
+    {
+        "key": "russian_roulette_survive",
+        "label": "🔫 Survivant",
+        "desc": "Survivre à {target} tir(s) de Roulette Russe",
+        "target_range": (1, 3),
+    },
+    {
+        "key": "dice_win",
+        "label": "🎲 Maître des Dés",
+        "desc": "Gagner {target} partie(s) aux Dés",
+        "target_range": (1, 3),
+    },
+    {
+        "key": "duel_won",
+        "label": "⚔️ Vainqueur de Duel",
+        "desc": "Gagner {target} duel(s) en PvP",
+        "target_range": (1, 2),
     },
 ]
+
+
+def generate_public_quests():
+    """Génère 8 quêtes aléatoires pour la journée"""
+    chosen = random.sample(QUEST_POOL, k=min(8, len(QUEST_POOL)))
+    quests = []
+    for q in chosen:
+        target = random.randint(*q["target_range"])
+        quests.append({
+            "key": q["key"],
+            "label": q["label"],
+            "desc": q["desc"].format(target=target),
+            "target": target
+        })
+    return quests
+
+
+def get_public_quests():
+    """Récupère ou génère les quêtes du jour"""
+    today = _today_str()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT quests_json FROM public_quests WHERE quest_date = ?", (today,))
+    row = cursor.fetchone()
+    
+    if row:
+        quests = json.loads(row[0])
+        conn.close()
+        return quests
+    
+    quests = generate_public_quests()
+    cursor.execute(
+        "INSERT INTO public_quests (quest_date, quests_json, generated_at) VALUES (?, ?, ?)",
+        (today, json.dumps(quests), int(time.time()))
+    )
+    conn.commit()
+    conn.close()
+    return quests
+
+
+def get_player_quests(user_id: int):
+    """Récupère la progression d'un joueur pour les quêtes du jour"""
+    today = _today_str()
+    public_quests = get_public_quests()
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    player_progress = []
+    for q in public_quests:
+        cursor.execute(
+            "SELECT progress, completed, claimed FROM player_quests WHERE user_id = ? AND quest_date = ? AND quest_key = ?",
+            (user_id, today, q["key"])
+        )
+        row = cursor.fetchone()
+        if row:
+            progress, completed, claimed = row
+        else:
+            progress = 0
+            completed = 0
+            claimed = 0
+            cursor.execute(
+                "INSERT INTO player_quests (user_id, quest_date, quest_key, progress, completed, claimed) VALUES (?, ?, ?, 0, 0, 0)",
+                (user_id, today, q["key"])
+            )
+        
+        player_progress.append({
+            "key": q["key"],
+            "label": q["label"],
+            "desc": q["desc"],
+            "target": q["target"],
+            "progress": progress,
+            "completed": completed,
+            "claimed": claimed
+        })
+    
+    conn.commit()
+    conn.close()
+    return player_progress
+
+
+def update_player_quest_progress(user_id: int, quest_key: str, amount: int = 1):
+    """Met à jour la progression d'un joueur pour une quête spécifique"""
+    if amount <= 0:
+        return
+    
+    today = _today_str()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT quests_json FROM public_quests WHERE quest_date = ?", (today,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return
+    
+    public_quests = json.loads(row[0])
+    quest_targets = {q["key"]: q["target"] for q in public_quests}
+    
+    if quest_key not in quest_targets:
+        conn.close()
+        return
+    
+    target = quest_targets[quest_key]
+    
+    cursor.execute("""
+        INSERT INTO player_quests (user_id, quest_date, quest_key, progress, completed, claimed)
+        VALUES (?, ?, ?, 0, 0, 0)
+        ON CONFLICT(user_id, quest_date, quest_key) DO NOTHING
+    """, (user_id, today, quest_key))
+    
+    cursor.execute("""
+        UPDATE player_quests 
+        SET progress = MIN(progress + ?, ?)
+        WHERE user_id = ? AND quest_date = ? AND quest_key = ?
+    """, (amount, target, user_id, today, quest_key))
+    
+    cursor.execute("""
+        UPDATE player_quests 
+        SET completed = 1 
+        WHERE user_id = ? AND quest_date = ? AND quest_key = ? AND progress >= target AND completed = 0
+    """, (user_id, today, quest_key))
+    
+    conn.commit()
+    conn.close()
+
+
+def claim_all_public_quests(user_id: int):
+    """Réclame la récompense si toutes les quêtes sont complétées"""
+    today = _today_str()
+    player_quests = get_player_quests(user_id)
+    
+    all_completed = all(q["completed"] for q in player_quests)
+    already_claimed = all(q["claimed"] for q in player_quests)
+    
+    if already_claimed:
+        return {"already_claimed": True}
+    
+    if not all_completed:
+        return None
+    
+    # Calculer la récompense
+    base_reward = 500
+    total_reward = base_reward
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE player_quests 
+        SET claimed = 1 
+        WHERE user_id = ? AND quest_date = ?
+    """, (user_id, today))
+    conn.commit()
+    conn.close()
+    
+    update_wallet(user_id, total_reward)
+    
+    return {
+        "total_reward": total_reward,
+        "all_completed": True
+    }
+
+
+def update_quest_progress_v2(user_id: int, quest_key: str, amount: int = 1):
+    """Version pour le nouveau système de quêtes"""
+    if amount <= 0:
+        return
+    update_player_quest_progress(user_id, quest_key, amount)
 
 
 def _today_str() -> str:
     return time.strftime("%Y-%m-%d")
 
+
+# ==========================================
+# 3.2. ANCIEN SYSTÈME DE QUÊTES (gardé pour compatibilité)
+# ==========================================
 
 QUEST_STREAK_MULT_STEP = 0.15
 QUEST_STREAK_MULT_MIN = 1.0
@@ -537,7 +784,21 @@ def get_daily_quests(user_id: int):
                 for r in rows
             ]
 
-        chosen = random.sample(QUEST_POOL, k=min(5, len(QUEST_POOL)))
+        quest_pool = [
+            {"key": "games_played", "desc_tpl": "Jouer {target} partie(s) dans un jeu de casino", "target_range": (3, 6)},
+            {"key": "games_won", "desc_tpl": "Gagner {target} partie(s) dans n'importe quel jeu", "target_range": (1, 3)},
+            {"key": "work_done", "desc_tpl": "Travailler {target} fois via /work", "target_range": (1, 3)},
+            {"key": "arena_fight", "desc_tpl": "Affronter Bob dans l'arène {target} fois", "target_range": (1, 2)},
+            {"key": "duel_played", "desc_tpl": "Faire {target} duel(s) PvP", "target_range": (1, 2)},
+            {"key": "bank_deposit", "desc_tpl": "Déposer à la banque {target} fois", "target_range": (1, 3)},
+            {"key": "pay_sent", "desc_tpl": "Envoyer de l'argent via /pay {target} fois", "target_range": (1, 2)},
+            {"key": "crime_attempt", "desc_tpl": "Tenter un crime chez John {target} fois", "target_range": (1, 3)},
+            {"key": "pmu_bet", "desc_tpl": "Parier chez Brook {target} fois", "target_range": (1, 3)},
+            {"key": "vault_attempt", "desc_tpl": "Braquer la Brinks {target} fois", "target_range": (1, 2)},
+            {"key": "money_earned", "desc_tpl": "Gagner un total de {target} $", "target_range": (500, 1500)},
+            {"key": "beer_drunk", "desc_tpl": "Commander {target} pinte(s) chez Jim", "target_range": (1, 3)},
+        ]
+        chosen = random.sample(quest_pool, k=min(5, len(quest_pool)))
         quests = []
         for q in chosen:
             target = random.randint(*q["target_range"])
@@ -620,16 +881,11 @@ def claim_all_daily_quests(user_id: int):
 
 
 # ==========================================
-# 3.2. SYSTÈME DES ACHIEVEMENTS CHARGÉ DEPUIS GITHUB
+# 3.3. SYSTÈME DES ACHIEVEMENTS
 # ==========================================
 
-TIERS_NAMES = {
-    1: "Bronze"
-}
-
-TIERS_COLORS = {
-    1: "#CD7F32"
-}
+TIERS_NAMES = {1: "Bronze"}
+TIERS_COLORS = {1: "#CD7F32"}
 
 ACHIEVEMENTS_DEFS = {}
 ACHIEVEMENTS_LOADED = False
@@ -700,7 +956,7 @@ async def reload_achievements(interaction: discord.Interaction):
 
 
 # =============================================================
-# CHARGEMENT DES ÉPISODES DEPUIS GITHUB (FICHIERS TEXTE)
+# CHARGEMENT DES ÉPISODES DEPUIS GITHUB
 # =============================================================
 
 EPISODE_TITLES = {}
@@ -773,7 +1029,7 @@ async def reload_episodes(interaction: discord.Interaction):
     else:
         embed = discord.Embed(
             title="⚠️ Rechargement partiel",
-            description="Certains épisodes n'ont pas pu être chargés. Vérifie les fichiers dans le dossier `episodes/`.",
+            description="Certains épisodes n'ont pas pu être chargés.",
             color=discord.Color.orange()
         )
     await interaction.followup.send(embed=embed, ephemeral=True)
@@ -877,44 +1133,34 @@ def evaluate_stat_for_achievement(key: str, user_id: int) -> int:
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
             q_row = cursor.fetchone()
             return q_row[0] if q_row else 0
-        
         elif key.startswith("arena_"):
             if "essai" in key or "assidu" in key:
                 return games_played
             elif "guerrier" in key or "champion" in key or "terreur" in key:
                 return games_won
-        
         elif key.startswith("pmu_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'pmu_bet' AND claimed = 1", (user_id,))
             return cursor.fetchone()[0] if cursor.fetchone() else 0
-        
         elif key.startswith("crime_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'crime_attempt' AND claimed = 1", (user_id,))
             return cursor.fetchone()[0] if cursor.fetchone() else 0
-        
         elif key.startswith("vault_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'vault_attempt' AND claimed = 1", (user_id,))
             return cursor.fetchone()[0] if cursor.fetchone() else 0
-        
         elif key.startswith("duel_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'duel_played' AND claimed = 1", (user_id,))
             return cursor.fetchone()[0] if cursor.fetchone() else 0
-        
         elif key.startswith("daily_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
             return cursor.fetchone()[0] if cursor.fetchone() else 0
-        
         elif key.startswith("taverne_"):
             return beers_today
-        
         elif key.startswith("bank_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'bank_deposit' AND claimed = 1", (user_id,))
             return cursor.fetchone()[0] if cursor.fetchone() else 0
-        
         elif key.startswith("larcin_"):
             cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'crime_attempt' AND claimed = 1", (user_id,))
             return cursor.fetchone()[0] if cursor.fetchone() else 0
-        
         elif key == "games_master":
             return games_won
         elif key == "wealth_tycoon":
@@ -1062,8 +1308,72 @@ async def validate_game_bet(
         return False
     return True
 
+
 # ==========================================
-# 5. MODALES DE MISE POUR CHAQUE JEU
+# 5. VUE POUR LE PANNEAU PUBLIC DES QUÊTES
+# ==========================================
+
+class PublicQuestsView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="📋 Voir ma progression", style=discord.ButtonStyle.primary, custom_id="quests_show_progress", emoji="📊")
+    async def show_progress(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        
+        player_quests = get_player_quests(interaction.user.id)
+        today = _today_str()
+        
+        embed = discord.Embed(
+            title=f"📋 Mes Quêtes du {today}",
+            color=discord.Color.blue()
+        )
+        
+        all_completed = all(q["completed"] for q in player_quests)
+        all_claimed = all(q["claimed"] for q in player_quests)
+        
+        description = "Voici l'avancement de tes quêtes d'aujourd'hui :\n\n"
+        
+        for q in player_quests:
+            if q["claimed"]:
+                status = "✅ Réclamé"
+            elif q["completed"]:
+                status = "🎯 Terminé !"
+            else:
+                progress_bar = "▰" * int((q["progress"] / q["target"]) * 10) + "▱" * (10 - int((q["progress"] / q["target"]) * 10))
+                status = f"{progress_bar} {q['progress']}/{q['target']}"
+            
+            description += f"**{q['label']}**\n{q['desc']}\n`{status}`\n\n"
+        
+        if all_completed and not all_claimed:
+            description += "\n🎉 **TOUTES LES QUÊTES SONT TERMINÉES !**\nClique sur le bouton ci-dessus pour réclamer ta récompense !"
+        elif all_claimed:
+            description += "\n✅ **Récompense déjà réclamée aujourd'hui !** Reviens demain pour de nouvelles quêtes."
+        
+        embed.description = description
+        embed.set_footer(text=f"8 quêtes à valider • Récompense : 500$")
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @ui.button(label="🎁 Réclamer la récompense", style=discord.ButtonStyle.success, custom_id="quests_claim_reward", emoji="🎁")
+    async def claim_reward(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        
+        result = claim_all_public_quests(interaction.user.id)
+        
+        if result is None:
+            await interaction.followup.send("❌ Toutes les quêtes doivent être terminées pour réclamer la récompense !", ephemeral=True)
+            return
+        
+        if result.get("already_claimed"):
+            await interaction.followup.send("❌ Tu as déjà réclamé ta récompense aujourd'hui !", ephemeral=True)
+            return
+        
+        await interaction.followup.send(f"🎉 **FÉLICITATIONS !** Tu as validé toutes les quêtes du jour et remporté **{format_currency(result['total_reward'])}** ! 🎉", ephemeral=True)
+
+
+# ==========================================
+# 6. MODALES DE MISE POUR CHAQUE JEU
 # ==========================================
 
 class BetModal(ui.Modal):
@@ -1092,7 +1402,7 @@ class BetModal(ui.Modal):
             print(f"❌ Erreur pendant le lancement du jeu : {type(e).__name__}: {e}")
             traceback.print_exc()
             await interaction.followup.send(
-                "❌ Bob n'a pas réussi à lancer le combat. L'erreur a été enregistrée dans la console du bot.",
+                "❌ Une erreur est survenue pendant le lancement du jeu.",
                 ephemeral=True
             )
 
@@ -1138,7 +1448,7 @@ class BrookPMUBetModal(ui.Modal, title="📜 Brook - Montant de la mise"):
 
 
 # ==========================================
-# 5.1. SYSTÈMES DE DUEL ENTRE JOUEURS
+# 6.1. SYSTÈMES DE DUEL ENTRE JOUEURS
 # ==========================================
 
 DUEL_REFUSED_MESSAGES = [
@@ -1153,6 +1463,7 @@ DUEL_REFUSED_MESSAGES = [
     "🦆 **{opponent}** a fait le canard et s'est couvert les yeux ! {challenger} attend toujours un vrai guerrier !",
     "🏃‍♂️ **{opponent}** a pris ses jambes à son cou, visiblement il n'était pas prêt pour ce combat !"
 ]
+
 
 class DuelPFCView(ui.View):
     def __init__(self, challenger: discord.Member, opponent: discord.Member, bet: int):
@@ -1193,6 +1504,7 @@ class DuelPFCView(ui.View):
                 update_wallet(self.opponent.id, -self.bet)
                 update_game_stats(self.challenger.id, won=True)
                 update_game_stats(self.opponent.id, won=False)
+                update_quest_progress_v2(self.challenger.id, "duel_won", 1)
                 await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.challenger.mention} !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
@@ -1203,6 +1515,7 @@ class DuelPFCView(ui.View):
                 update_wallet(self.challenger.id, -self.bet)
                 update_game_stats(self.opponent.id, won=True)
                 update_game_stats(self.challenger.id, won=False)
+                update_quest_progress_v2(self.opponent.id, "duel_won", 1)
                 await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.opponent.mention} !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
@@ -1271,6 +1584,7 @@ class DuelDiceView(ui.View):
                 update_wallet(self.opponent.id, -self.bet)
                 update_game_stats(self.challenger.id, won=True)
                 update_game_stats(self.opponent.id, won=False)
+                update_quest_progress_v2(self.challenger.id, "duel_won", 1)
                 await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.challenger.mention} ({c_score} vs {o_score}) !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
@@ -1281,6 +1595,7 @@ class DuelDiceView(ui.View):
                 update_wallet(self.challenger.id, -self.bet)
                 update_game_stats(self.opponent.id, won=True)
                 update_game_stats(self.challenger.id, won=False)
+                update_quest_progress_v2(self.opponent.id, "duel_won", 1)
                 await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.opponent.mention} ({o_score} vs {c_score}) !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
@@ -1410,7 +1725,7 @@ class DuelAcceptView(ui.View):
 
 
 # ==========================================
-# 6. INTERFACES INTERACTIVES & MODALES (BANQUE & DAB)
+# 7. INTERFACES INTERACTIVES & MODALES (BANQUE & DAB)
 # ==========================================
 
 class DepositModal(ui.Modal, title="📥 DAB - Dépôt de billets"):
@@ -1444,6 +1759,7 @@ class DepositModal(ui.Modal, title="📥 DAB - Dépôt de billets"):
                 conn.commit()
 
             update_quest_progress(interaction.user.id, "bank_deposit", 1)
+            update_quest_progress_v2(interaction.user.id, "bank_deposit", 1)
             await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
 
             await send_public_log(
@@ -1544,7 +1860,7 @@ class BankView(ui.View):
 
 
 # ==========================================
-# 7. INTERFACES DES IA : JIM, JOHN, BROOK & BOB
+# 8. INTERFACES DES IA : JIM, JOHN, BROOK & BOB
 # ==========================================
 
 class TavernierGamesView(ui.View):
@@ -1615,7 +1931,6 @@ class TavernDuelBetModal(ui.Modal, title="⚔️ Tavernier - Configuration du Du
         game_name = "Dés du Destin" if self.game_type == "dice" else "Pierre-Feuille-Ciseaux"
         view = DuelAcceptView(interaction.user, self.opponent, self.game_type, bet, from_jim=True, interaction_ref=interaction)
         
-        # ENVOI PUBLIC DANS LE SALON B (pas dans le salon A)
         embed = discord.Embed(
             title="⚔️ DÉFI DE DUEL (TAVERNE)",
             description=(
@@ -1626,7 +1941,6 @@ class TavernDuelBetModal(ui.Modal, title="⚔️ Tavernier - Configuration du Du
             ),
             color=discord.Color.dark_red()
         )
-        # Envoyer dans le salon B (public)
         view.public_message = await send_public_log(embed=embed, view=view)
         if view.public_message is None:
             return await interaction.followup.send("❌ Impossible d'envoyer la demande de duel dans le Salon B. Vérifie les permissions du bot.", ephemeral=True)
@@ -1713,6 +2027,7 @@ class JimTavernView(ui.View):
         update_wallet(user_id, -50)
         beers_today += 1
         update_quest_progress(user_id, "beer_drunk", 1)
+        update_quest_progress_v2(user_id, "beer_drunk", 1)
 
         events = [
             ("gain", 200, f"🍻 Tu as passé une excellente soirée et gagné à un jeu de dés clandestin ! +**{format_currency(200)}**"),
@@ -1767,7 +2082,7 @@ class JimTavernView(ui.View):
 
 
 # ==========================================
-# JOHN - CORRECTION DU BRAQUAGE
+# JOHN - BRIGAND
 # ==========================================
 
 class JohnRobSelect(ui.UserSelect):
@@ -1803,10 +2118,9 @@ class JohnRobSelect(ui.UserSelect):
 
         check_cooldown(user_id, "john_rob", 60)
 
-        # 3 possibilités
         roll = random.random()
         
-        if roll < 0.4:  # 40% - Succès
+        if roll < 0.4:
             stolen = random.randint(50, int(victim_wallet * 0.7))
             update_wallet(victim.id, -stolen)
             update_wallet(user_id, stolen)
@@ -1821,7 +2135,7 @@ class JohnRobSelect(ui.UserSelect):
                 ephemeral=True
             )
             
-        elif roll < 0.7:  # 30% - Échec
+        elif roll < 0.7:
             await send_public_log(
                 content=f"🥷 **{interaction.user.display_name}** a tenté de voler {victim.display_name} mais a échoué !"
             )
@@ -1831,7 +2145,7 @@ class JohnRobSelect(ui.UserSelect):
                 ephemeral=True
             )
             
-        else:  # 30% - Victime riposte
+        else:
             stolen_from_thief = min(random.randint(50, int(thief_wallet * 0.5)), thief_wallet)
             if stolen_from_thief > 0:
                 update_wallet(user_id, -stolen_from_thief)
@@ -1961,7 +2275,7 @@ class JohnCrimeView(ui.View):
     async def crime_btn(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         user_id = interaction.user.id
-        retry_after = check_cooldown(user_id, "john_crime", 60)  # 1 minute
+        retry_after = check_cooldown(user_id, "john_crime", 60)
         if retry_after > 0:
             minutes, seconds = divmod(retry_after, 60)
             msg_text = f'🥷 *John* : "Reviens dans **{minutes}m {seconds}s**."'
@@ -1970,6 +2284,7 @@ class JohnCrimeView(ui.View):
         success = random.choice([True, False])
         wallet, _, _, _, _, _, _, _, _ = get_user(user_id)
         update_quest_progress(user_id, "crime_attempt", 1)
+        update_quest_progress_v2(user_id, "crime_attempt", 1)
 
         if success:
             gain = random.randint(300, 1000)
@@ -2018,6 +2333,7 @@ class JohnCrimeView(ui.View):
             return await interaction.response.send_message(f'🔐 *John* : "Le convoi de la Brinks est surveillé. Attends **{hours}h {minutes}m {seconds}s** avant de replonger."', ephemeral=True)
 
         update_quest_progress(user_id, "vault_attempt", 1)
+        update_quest_progress_v2(user_id, "vault_attempt", 1)
         prize = random.randint(2000, 7500)
         secret_code = f"{random.randint(0, 9)}{random.randint(0, 9)}{random.randint(0, 9)}{random.randint(0, 9)}"
 
@@ -2035,7 +2351,7 @@ class JohnCrimeView(ui.View):
 
 
 # ==========================================
-# 7.1. BOB LE MAITRE D'ARME - CORRIGÉ
+# BOB LE MAITRE D'ARME
 # ==========================================
 
 class ArenaFightView(ui.View):
@@ -2085,6 +2401,7 @@ class ArenaFightView(ui.View):
             gain = self.bet * 2
             update_wallet(self.user_id, gain - self.bet)
             update_game_stats(self.user_id, won=True)
+            update_quest_progress_v2(self.user_id, "arena_fight", 1)
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             
             await send_public_log(
@@ -2143,8 +2460,8 @@ async def run_arena_fight(interaction: discord.Interaction, bet: int):
         return
 
     update_quest_progress(interaction.user.id, "arena_fight", 1)
+    update_quest_progress_v2(interaction.user.id, "arena_fight", 1)
     
-    # Envoyer un message public dans le salon B
     await send_public_log(
         content=f"⚔️ **{interaction.user.display_name}** entre dans l'arène pour affronter Bob ! Mise : **{format_currency(bet)}**"
     )
@@ -2160,7 +2477,6 @@ class BobArenaView(ui.View):
 
     @ui.button(label="Entrer dans l'Arène (Combattre Bob)", style=discord.ButtonStyle.danger, emoji="⚔️", custom_id="bob_arena_fight")
     async def fight_btn(self, interaction: discord.Interaction, button: ui.Button):
-        # Le cooldown est posé uniquement quand la mise valide est connue.
         await interaction.response.send_modal(BetModal("⚔️ Arène - Mise de Combat", run_arena_fight))
 
     @ui.button(label="Défier un ami (Duel PvP)", style=discord.ButtonStyle.secondary, emoji="🤺", custom_id="bob_arena_duel")
@@ -2234,7 +2550,6 @@ class ArenaDuelBetModal(ui.Modal, title="⚔️ Arène - Mise du Duel"):
 
         view = DuelAcceptView(interaction.user, self.opponent, "dice", bet, from_jim=False, interaction_ref=interaction)
         
-        # ENVOI PUBLIC DANS LE SALON B
         embed = discord.Embed(
             title="⚔️ DÉFI DE L'ARÈNE",
             description=(
@@ -2252,7 +2567,7 @@ class ArenaDuelBetModal(ui.Modal, title="⚔️ Arène - Mise du Duel"):
 
 
 # ==========================================
-# 8. PMU ET BROOK - CORRIGÉ
+# PMU ET BROOK
 # ==========================================
 
 PMU_ODDS = {1: 3.0, 2: 3.0, 3: 3.0, 4: 3.0}
@@ -2263,6 +2578,7 @@ async def run_pmu_game(interaction: discord.Interaction, cheval: int, bet: int):
         return
 
     update_quest_progress(interaction.user.id, "pmu_bet", 1)
+    update_quest_progress_v2(interaction.user.id, "pmu_bet", 1)
     show_anim = get_user_animation_preference(interaction.user.id)
 
     chevaux = {
@@ -2309,6 +2625,7 @@ async def run_pmu_game(interaction: discord.Interaction, cheval: int, bet: int):
         gain = int(bet * cote)
         update_wallet(interaction.user.id, gain - bet)
         update_game_stats(interaction.user.id, won=True)
+        update_quest_progress_v2(interaction.user.id, "pmu_win", 1)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         res_msg = f"🏆 **[PMU] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! Ton pari sur **{chevaux[cheval]['nom']}** (cote x{cote}) passe haut la main ! +**{format_currency(gain)}**"
         
@@ -2355,6 +2672,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         return
 
     update_quest_progress(interaction.user.id, "pmu_bet", 1)
+    update_quest_progress_v2(interaction.user.id, "pmu_bet", 1)
     show_anim = get_user_animation_preference(interaction.user.id)
 
     chevaux = {
@@ -2367,13 +2685,11 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
     piste_len = 10
     positions = {1: 0, 2: 0, 3: 0, 4: 0}
 
-    # UN SEUL message initial
     initial_piste = "🏁 **Brook - Départ de la course PMU !** Les chevaux s'élancent...\n```text\n┌── HIPPODROME ────────┐\n"
     for cid, data in chevaux.items():
         initial_piste += f"│#{cid}[{data['emoji']}{'-'*piste_len}]│\n"
     initial_piste += "└──────────────────────┘\n```"
 
-    # UN SEUL message de course : on conserve sa référence et on édite CE message.
     course_message = await interaction.followup.send(initial_piste, ephemeral=True, wait=True)
 
     async def edit_course(content: str):
@@ -2386,7 +2702,6 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
 
     weights = [round(10 / dynamic_odds[i], 2) for i in range(1, 5)]
 
-    # Animation sur le MÊME message
     while max(positions.values()) < piste_len:
         await asyncio.sleep(1.0)
         for c in positions:
@@ -2403,7 +2718,6 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         piste_str += "└──────────────────────┘\n```"
         await edit_course(piste_str)
 
-    # Résultat final sur le MÊME message
     max_p = max(positions.values())
     gagnants = [c for c, p in positions.items() if p >= max_p]
 
@@ -2415,6 +2729,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         gain = int(bet * cote)
         update_wallet(interaction.user.id, gain - bet)
         update_game_stats(interaction.user.id, won=True)
+        update_quest_progress_v2(interaction.user.id, "pmu_win", 1)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         res_msg = f"🏆 **[BROOK LA BOOKMAKEUSE] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! Ton pari sur **{chevaux[horse_choice]['nom']}** (cote x{cote}) passe haut la main ! +**{format_currency(gain)}**"
         
@@ -2437,10 +2752,8 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         final_piste += f"│#{cid}[{ligne}]│\n"
     final_piste += f"└──────────────────────┘\n```\n{res_msg}"
 
-    # Résultat final : toujours le même message de course.
     await edit_course(final_piste)
 
-    # Mettre à jour EXACTEMENT le panneau Brook qui a lancé la course.
     new_odds = generate_brook_odds()
     new_embed = discord.Embed(
         description=(
@@ -2455,7 +2768,6 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         if panel_message is not None:
             await panel_message.edit(embed=new_embed, view=BrookBookmakerView(new_odds))
         else:
-            # Secours pour les anciens boutons/messages : on retrouve le panneau Brook.
             with get_db_connection() as conn:
                 cur = conn.cursor()
                 cur.execute("SELECT channel_id FROM ai_channels WHERE ai_type = ?", ("brook",))
@@ -2555,7 +2867,6 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, game:
     game_name = "Dés du Destin" if game == "dice" else "Pierre-Feuille-Ciseaux"
     view = DuelAcceptView(interaction.user, opponent, game, bet, from_jim=True, interaction_ref=interaction)
 
-    # ENVOI PUBLIC DANS LE SALON B
     embed = discord.Embed(
         title="⚔️ DÉFI DE DUEL",
         description=(
@@ -2588,6 +2899,7 @@ async def vault(interaction: discord.Interaction):
         return await interaction.followup.send(f'🔐 *John* : "Le convoi de la Brinks est surveillé. Attends **{hours}h {minutes}m {seconds}s** avant de replonger."', ephemeral=True)
 
     update_quest_progress(user_id, "vault_attempt", 1)
+    update_quest_progress_v2(user_id, "vault_attempt", 1)
     prize = random.randint(2000, 7500)
     secret_code = f"{random.randint(0, 9)}{random.randint(0, 9)}{random.randint(0, 9)}{random.randint(0, 9)}"
 
@@ -2939,6 +3251,7 @@ async def work(interaction: discord.Interaction):
     gain = random.randint(100, 500)
     update_wallet(user_id, gain)
     update_quest_progress(user_id, "work_done", 1)
+    update_quest_progress_v2(user_id, "work_done", 1)
     await check_and_unlock_achievements(user_id, bot_client=bot)
 
     await send_public_log(
@@ -2973,6 +3286,7 @@ async def pay(interaction: discord.Interaction, receiver: discord.Member, amount
     update_wallet(interaction.user.id, -amount)
     update_wallet(receiver.id, amount)
     update_quest_progress(interaction.user.id, "pay_sent", 1)
+    update_quest_progress_v2(interaction.user.id, "pay_sent", 1)
     
     await send_public_log(
         content=f"💸 **{interaction.user.display_name}** a envoyé **{format_currency(amount)}** à {receiver.display_name} !"
@@ -2981,7 +3295,7 @@ async def pay(interaction: discord.Interaction, receiver: discord.Member, amount
     await interaction.followup.send(f"💸 {interaction.user.mention} ➔ **{format_currency(amount)}** à {receiver.mention} !", ephemeral=True)
 
 
-@bot.tree.command(name="setup", description="[ADMIN] Configure les salons pour la Banque, Jim, John, Brook, Bob, Marchand, Troubadour ou les Succès")
+@bot.tree.command(name="setup", description="[ADMIN] Configure les salons pour la Banque, Jim, John, Brook, Bob, Marchand, Troubadour, Succès ou Quêtes")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.choices(ai_type=[
     app_commands.Choice(name="Tous les PNJ dans un salon unique (Carrefour PNJ)", value="all"),
@@ -2992,7 +3306,8 @@ async def pay(interaction: discord.Interaction, receiver: discord.Member, amount
     app_commands.Choice(name="arene (Bob le maître d'arme)", value="arene"),
     app_commands.Choice(name="marchand (Tom)", value="marchand"),
     app_commands.Choice(name="troubadour (Guillaume)", value="troubadour"),
-    app_commands.Choice(name="achievements (Salon des succès débloqués)", value="achievements")
+    app_commands.Choice(name="achievements (Salon des succès débloqués)", value="achievements"),
+    app_commands.Choice(name="quetes (Panneau des quêtes quotidiennes)", value="quetes")
 ])
 async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.TextChannel):
     await interaction.response.defer(ephemeral=True)
@@ -3001,7 +3316,6 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
     if ai_type == "all":
         await interaction.followup.send(f"✅ Le Carrefour des PNJ a bien été déployé dans {salon.mention} !", ephemeral=True)
 
-        # 1. Jim
         if os.path.exists("assets/jim.png"):
             file_jim = discord.File("assets/jim.png", filename="jim.png")
             embed_jim = discord.Embed(
@@ -3023,7 +3337,6 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
             )
             await salon.send(embed=embed_jim, view=JimTavernView())
 
-        # 2. John
         if os.path.exists("assets/john.png"):
             file_john = discord.File("assets/john.png", filename="john.png")
             embed_john = discord.Embed(
@@ -3045,7 +3358,6 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
             )
             await salon.send(embed=embed_john, view=JohnCrimeView())
 
-        # 3. Bob
         if os.path.exists("assets/bob.png"):
             file_bob = discord.File("assets/bob.png", filename="bob.png")
             embed_bob = discord.Embed(
@@ -3067,7 +3379,6 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
             )
             await salon.send(embed=embed_bob, view=BobArenaView())
 
-        # 4. Brook
         odds = generate_brook_odds()
         if os.path.exists("assets/brook.png"):
             file_brook = discord.File("assets/brook.png", filename="brook.png")
@@ -3092,7 +3403,6 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
             )
             await salon.send(embed=embed_brook, view=BrookBookmakerView(odds))
 
-        # 5. Marchand (Tom)
         embed_marchand = discord.Embed(
             title="✨ Bienvenue au Salon du Shop !",
             description=(
@@ -3104,7 +3414,6 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
         embed_marchand.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
         await salon.send(embed=embed_marchand, view=PersistentMerchantView())
 
-        # 6. Troubadour (Guillaume)
         embed_troubadour = discord.Embed(
             title="🪕 Guillaume le Troubadour",
             description=(
@@ -3115,6 +3424,34 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
         )
         embed_troubadour.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
         await salon.send(embed=embed_troubadour, view=PersistentTroubadourView())
+
+        # Panneau des quêtes
+        quests = get_public_quests()
+        embed_quests = discord.Embed(
+            title=f"📋 Quêtes du Jour",
+            description="**8 quêtes sont à valider aujourd'hui !**\n\nTermine toutes les quêtes pour gagner ta récompense.\nClique sur le bouton ci-dessous pour suivre ta progression.",
+            color=discord.Color.gold()
+        )
+        
+        for i, q in enumerate(quests, 1):
+            embed_quests.add_field(
+                name=f"{q['label']}",
+                value=f"{q['desc']}\n`⏳ À valider`",
+                inline=False
+            )
+        
+        embed_quests.set_footer(text=f"Quêtes du {_today_str()} • Récompense : 500$")
+        
+        msg = await salon.send(embed=embed_quests, view=PublicQuestsView())
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO quest_channels (guild_id, channel_id, message_id) VALUES (?, ?, ?)",
+            (guild_id, salon.id, msg.id)
+        )
+        conn.commit()
+        conn.close()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -3253,6 +3590,37 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
         embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
         await salon.send(embed=embed, view=PersistentTroubadourView())
         await interaction.followup.send(f"✅ Guillaume le Troubadour a été installé dans {salon.mention} avec succès !", ephemeral=True)
+
+    elif ai_type == "quetes":
+        await interaction.followup.send(f"✅ Le panneau des quêtes a été installé dans {salon.mention} avec succès !", ephemeral=True)
+        
+        quests = get_public_quests()
+        
+        embed = discord.Embed(
+            title=f"📋 Quêtes du Jour",
+            description="**8 quêtes sont à valider aujourd'hui !**\n\nTermine toutes les quêtes pour gagner ta récompense.\nClique sur le bouton ci-dessous pour suivre ta progression.",
+            color=discord.Color.gold()
+        )
+        
+        for i, q in enumerate(quests, 1):
+            embed.add_field(
+                name=f"{q['label']}",
+                value=f"{q['desc']}\n`⏳ À valider`",
+                inline=False
+            )
+        
+        embed.set_footer(text=f"Quêtes du {_today_str()} • Récompense : 500$")
+        
+        msg = await salon.send(embed=embed, view=PublicQuestsView())
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO quest_channels (guild_id, channel_id, message_id) VALUES (?, ?, ?)",
+            (guild_id, salon.id, msg.id)
+        )
+        conn.commit()
+        conn.close()
 
 
 @bot.tree.command(name="add-money", description="[ADMIN] Ajouter de l'argent")
@@ -3434,6 +3802,7 @@ class BlackjackView(ui.View):
             gain = int(self.game.bet * 1.5)
             update_wallet(self.game.user_id, gain)
             update_game_stats(self.game.user_id, won=True)
+            update_quest_progress_v2(self.game.user_id, "blackjack_win", 1)
             await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
             
             await send_public_log(
@@ -3474,6 +3843,7 @@ class BlackjackView(ui.View):
             gain = self.game.bet
             update_wallet(self.game.user_id, gain)
             update_game_stats(self.game.user_id, won=True)
+            update_quest_progress_v2(self.game.user_id, "blackjack_win", 1)
             await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
             res = f"🎉 Banque > 21 ! +{format_currency(gain)}"
             
@@ -3484,6 +3854,7 @@ class BlackjackView(ui.View):
             gain = self.game.bet
             update_wallet(self.game.user_id, gain)
             update_game_stats(self.game.user_id, won=True)
+            update_quest_progress_v2(self.game.user_id, "blackjack_win", 1)
             await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
             res = f"🎉 Gagné ! +{format_currency(gain)}"
             
@@ -3562,6 +3933,7 @@ async def run_slots_game(interaction: discord.Interaction, bet: int):
         status = f"TRIPLE! +{format_currency(reward)}"
         update_wallet(interaction.user.id, reward - bet)
         update_game_stats(interaction.user.id, won=True)
+        update_quest_progress_v2(interaction.user.id, "slots_win", 1)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         
         await send_public_log(
@@ -3572,6 +3944,7 @@ async def run_slots_game(interaction: discord.Interaction, bet: int):
         status = f"DUO! +{format_currency(reward)}"
         update_wallet(interaction.user.id, reward - bet)
         update_game_stats(interaction.user.id, won=True)
+        update_quest_progress_v2(interaction.user.id, "slots_win", 1)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         
         await send_public_log(
@@ -3659,6 +4032,7 @@ class DiceView(ui.View):
         if (p1 + p2) > (d1 + d2):
             update_wallet(self.user_id, self.bet)
             update_game_stats(self.user_id, won=True)
+            update_quest_progress_v2(self.user_id, "dice_win", 1)
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             status = f"VICTOIRE! +{format_currency(self.bet)}"
             
@@ -3765,6 +4139,7 @@ class RouletteView(ui.View):
             reward = self.bet * mult
             update_wallet(self.user_id, reward - self.bet)
             update_game_stats(self.user_id, won=True)
+            update_quest_progress_v2(self.user_id, "roulette_win", 1)
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             status = f"GAGNÉ! +{format_currency(reward)}"
             
@@ -3881,6 +4256,7 @@ class RussianRouletteView(ui.View):
             total_gain = self.bet + 2000
             update_wallet(self.user_id, total_gain)
             update_game_stats(self.user_id, won=True)
+            update_quest_progress_v2(self.user_id, "russian_roulette_survive", 1)
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             
             await send_public_log(
@@ -3929,6 +4305,7 @@ class RussianRouletteView(ui.View):
         won = int(self.bet * self.get_current_multiplier())
         update_wallet(self.user_id, won)
         update_game_stats(self.user_id, won=True)
+        update_quest_progress_v2(self.user_id, "russian_roulette_survive", 1)
         await check_and_unlock_achievements(self.user_id, bot_client=bot)
         
         await send_public_log(
@@ -4050,6 +4427,7 @@ class PFCView(ui.View):
               (self.choice == "ciseau" and bot_choice == "feuille")):
             update_wallet(self.user_id, self.bet)
             update_game_stats(self.user_id, won=True)
+            update_quest_progress_v2(self.user_id, "pfc_win", 1)
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             res = "🎉 Gagné !"
             face = "(^o^) 🏆"
@@ -4104,10 +4482,6 @@ async def pfc(interaction: discord.Interaction):
     await interaction.response.send_modal(BetModal("✂️ PFC - Mise", run_pfc_game))
 
 
-# ==========================================
-# CORRECTION DE LA FONCTION run_poker_game
-# ==========================================
-
 async def run_poker_game(interaction: discord.Interaction, mise: int):
     if not await validate_game_bet(interaction, "poker-solitaire", mise):
         return
@@ -4134,6 +4508,7 @@ async def run_poker_game(interaction: discord.Interaction, mise: int):
     if gain > 0:
         update_wallet(interaction.user.id, gain)
         update_game_stats(interaction.user.id, won=True)
+        update_quest_progress_v2(interaction.user.id, "poker_win", 1)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         
         await send_public_log(
@@ -4175,7 +4550,6 @@ async def poker_solitaire(interaction: discord.Interaction):
 # SYSTÈME BOUTIQUE & GUILLAUME LE TROUBADOUR
 # =============================================================
 
-# --- VUE POUR LA BOUTIQUE DES ÉPISODES AVEC MÉMOIRE ---
 class EpisodeShopView(ui.View):
     def __init__(self, member: discord.Member, episode_num: int = None):
         super().__init__(timeout=120)
@@ -4289,7 +4663,6 @@ class EpisodeShopView(ui.View):
         await interaction.response.edit_message(embed=embed, view=new_view)
 
 
-# --- VUE POUR LA BOUTIQUE DYNAMIQUE CLASSIQUE ---
 class DynamicShopView(ui.View):
     def __init__(self, member: discord.Member, shop_type: str):
         super().__init__(timeout=60)
@@ -4362,7 +4735,6 @@ class DynamicShopView(ui.View):
         return callback
 
 
-# --- MENU DE DIALOGUE PRINCIPAL DU MARCHAND ---
 class ShopDialogueView(ui.View):
     def __init__(self, member: discord.Member):
         super().__init__(timeout=120)
@@ -4507,10 +4879,6 @@ class PersistentMerchantView(ui.View):
         view = ShopDialogueView(interaction.user)
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-
-# ==========================================
-# SYSTÈME DE GUILLAUME LE TROUBADOUR AVEC MÉMOIRE
-# ==========================================
 
 class PersistentTroubadourView(ui.View):
     def __init__(self):
@@ -4787,6 +5155,61 @@ async def shop_remove(interaction: discord.Interaction, item_key: str):
         await interaction.followup.send(f"❌ Aucun article trouvé avec la clé `{item_key}`.", ephemeral=True)
 
 
+async def refresh_public_quests():
+    """Tâche qui tourne en arrière-plan pour rafraîchir les quêtes à minuit"""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        now = datetime.datetime.now()
+        midnight = datetime.datetime.combine(now.date() + datetime.timedelta(days=1), datetime.time.min)
+        seconds_until_midnight = (midnight - now).total_seconds()
+        
+        await asyncio.sleep(seconds_until_midnight)
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT channel_id, message_id FROM quest_channels")
+        channels = cursor.fetchall()
+        conn.close()
+        
+        new_quests = generate_public_quests()
+        today = _today_str()
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO public_quests (quest_date, quests_json, generated_at) VALUES (?, ?, ?)",
+            (today, json.dumps(new_quests), int(time.time()))
+        )
+        conn.commit()
+        conn.close()
+        
+        for channel_id, message_id in channels:
+            channel = bot.get_channel(channel_id)
+            if channel:
+                try:
+                    msg = await channel.fetch_message(message_id)
+                    
+                    embed = discord.Embed(
+                        title=f"📋 Quêtes du Jour",
+                        description="**8 quêtes sont à valider aujourd'hui !**\n\nTermine toutes les quêtes pour gagner ta récompense.\nClique sur le bouton ci-dessous pour suivre ta progression.",
+                        color=discord.Color.gold()
+                    )
+                    
+                    for i, q in enumerate(new_quests, 1):
+                        embed.add_field(
+                            name=f"{q['label']}",
+                            value=f"{q['desc']}\n`⏳ À valider`",
+                            inline=False
+                        )
+                    
+                    embed.set_footer(text=f"Quêtes du {today} • Récompense : 500$")
+                    
+                    await msg.edit(embed=embed, view=PublicQuestsView())
+                    print(f"✅ Quêtes mises à jour pour le {today}")
+                except Exception as e:
+                    print(f"❌ Erreur mise à jour du panneau de quêtes : {e}")
+
+
 # ==========================================
 # GESTION GLOBALE DES ERREURS DE COMMANDES SLASH
 # ==========================================
@@ -4856,9 +5279,11 @@ async def on_ready():
             bot.add_view(PersistentMerchantView())
             bot.add_view(PersistentTroubadourView())
             bot.add_view(BobArenaView())
+            bot.add_view(PublicQuestsView())
             bot._persistent_views_registered = True
             print("🦊 Vue persistante du Marchand : OK")
             print("🪕 Vue persistante de Guillaume : OK")
+            print("📋 Vue persistante des Quêtes : OK")
         except Exception as e:
             print(f"❌ ERREUR VUES PERSISTANTES : {type(e).__name__}: {e}")
             traceback.print_exc()
@@ -4891,6 +5316,10 @@ async def on_ready():
         print(f"📋 Commandes disponibles : {', '.join(commands_list)}")
     except Exception as e:
         print(f"❌ ERREUR LISTE COMMANDES : {e}")
+
+    # Démarrer la tâche de rafraîchissement des quêtes
+    bot.loop.create_task(refresh_public_quests())
+    print("🔄 Tâche de rafraîchissement des quêtes démarrée")
 
     print("✅ Initialisation terminée : le bot est prêt à recevoir les commandes.")
 
