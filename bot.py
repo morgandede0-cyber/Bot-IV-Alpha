@@ -49,24 +49,33 @@ def get_log_separator() -> str:
     """Génère un séparateur simple pour le salon B."""
     return "─" * 60
 
+def format_with_separators(content: str) -> str:
+    """Ajoute des séparateurs en haut et en bas du contenu."""
+    sep = get_log_separator()
+    return f"`{sep}`\n{content}\n`{sep}`"
+
 async def send_public_log(content: str = None, embed: discord.Embed = None, file: discord.File = None, view: ui.View = None):
-    """Envoie un message public dans le Salon B avec des séparateurs en haut et en bas."""
+    """Envoie un message public dans le Salon B avec des séparateurs intégrés."""
     if PUBLIC_LOG_CHANNEL_ID:
         channel = bot.get_channel(PUBLIC_LOG_CHANNEL_ID)
         if channel:
             try:
-                sep = get_log_separator()
+                # Si c'est un embed, on ajoute le séparateur dans l'embed
+                if embed:
+                    sep = get_log_separator()
+                    # Créer un nouvel embed ou ajouter un field avec le séparateur
+                    if content:
+                        embed.description = f"`{sep}`\n{content}\n`{sep}`"
+                    else:
+                        embed.description = f"`{sep}`\n{embed.description or ''}\n`{sep}`"
+                    return await channel.send(embed=embed, file=file, view=view)
                 
-                # Envoyer le séparateur du haut
-                await channel.send(f"`{sep}`")
+                # Si c'est du texte simple, on formate avec les séparateurs
+                if content:
+                    formatted_content = format_with_separators(content)
+                    return await channel.send(content=formatted_content, file=file, view=view)
                 
-                # Envoyer le contenu
-                result = await channel.send(content=content, embed=embed, file=file, view=view)
-                
-                # Envoyer le séparateur du bas
-                await channel.send(f"`{sep}`")
-                
-                return result
+                return await channel.send(content=content, embed=embed, file=file, view=view)
             except Exception as e:
                 print(f"❌ Erreur envoi log public : {e}")
     return None
