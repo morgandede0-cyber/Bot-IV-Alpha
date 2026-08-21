@@ -1280,7 +1280,7 @@ class DuelDiceView(ui.View):
                 update_wallet(self.opponent.id, self.bet)
                 update_wallet(self.challenger.id, -self.bet)
                 update_game_stats(self.opponent.id, won=True)
-                update_game_stats(self.opponent.id, won=False)
+                update_game_stats(self.challenger.id, won=False)
                 await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.opponent.mention} ({o_score} vs {c_score}) !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
@@ -4104,9 +4104,15 @@ async def pfc(interaction: discord.Interaction):
     await interaction.response.send_modal(BetModal("✂️ PFC - Mise", run_pfc_game))
 
 
+# ==========================================
+# CORRECTION DE LA FONCTION run_poker_game
+# ==========================================
+
 async def run_poker_game(interaction: discord.Interaction, mise: int):
     if not await validate_game_bet(interaction, "poker-solitaire", mise):
-        return    symboles = ["♠️", "♥️", "♦️", "♣️"]
+        return
+    
+    symboles = ["♠️", "♥️", "♦️", "♣️"]
     valeurs = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
     main = [f"[{random.choice(valeurs)}{random.choice(symboles)}]" for _ in range(5)]
     v_main = [c[1:-1] for c in main]
