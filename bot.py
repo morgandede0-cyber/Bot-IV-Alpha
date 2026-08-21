@@ -1051,7 +1051,7 @@ async def validate_game_bet(
     if bet > MAX_BET:
         await reject(f"❌ La mise maximale autorisée est de **{MAX_BET} $** !")
         return False
-    wallet, _, _, _, _, _, _, _ = get_user(interaction.user.id)
+    wallet = get_user(interaction.user.id)[0]
     if wallet < bet:
         await reject("❌ Solde insuffisant dans ton portefeuille ! Pense à retirer de l'argent via /banque.")
         return False
@@ -1086,7 +1086,15 @@ class BetModal(ui.Modal):
         except ValueError:
             return await interaction.followup.send("❌ Veuillez entrer un nombre entier valide.", ephemeral=True)
 
-        await self.callback_game(interaction, bet_amount)
+        try:
+            await self.callback_game(interaction, bet_amount)
+        except Exception as e:
+            print(f"❌ Erreur pendant le lancement du jeu : {type(e).__name__}: {e}")
+            traceback.print_exc()
+            await interaction.followup.send(
+                "❌ Bob n'a pas réussi à lancer le combat. L'erreur a été enregistrée dans la console du bot.",
+                ephemeral=True
+            )
 
 
 class PMUBetModal(ui.Modal, title="🏁 PMU - Choix du cheval et mise"):
@@ -1110,10 +1118,11 @@ class PMUBetModal(ui.Modal, title="🏁 PMU - Choix du cheval et mise"):
 class BrookPMUBetModal(ui.Modal, title="📜 Brook - Montant de la mise"):
     bet_input = ui.TextInput(label="Montant de la mise", placeholder="Ex: 100", required=True, max_length=6)
 
-    def __init__(self, horse_choice: int, dynamic_odds: dict):
+    def __init__(self, horse_choice: int, dynamic_odds: dict, panel_message=None):
         super().__init__()
         self.horse_choice = horse_choice
         self.dynamic_odds = dynamic_odds
+        self.panel_message = panel_message
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -1122,7 +1131,10 @@ class BrookPMUBetModal(ui.Modal, title="📜 Brook - Montant de la mise"):
         except ValueError:
             return await interaction.followup.send("❌ Veuillez entrer un montant valide.", ephemeral=True)
 
-        await run_brook_pmu_game(interaction, self.horse_choice, bet_amount, self.dynamic_odds)
+        await run_brook_pmu_game(
+            interaction, self.horse_choice, bet_amount, self.dynamic_odds,
+            panel_message=self.panel_message
+        )
 
 
 # ==========================================
@@ -2338,7 +2350,7 @@ def generate_brook_odds():
     return odds
 
 
-async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int, bet: int, dynamic_odds: dict):
+async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int, bet: int, dynamic_odds: dict, panel_message=None):
     if not await validate_game_bet(interaction, "brook_bet", bet, cooldown_sec=1800):
         return
 
@@ -2367,6 +2379,8 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
     async def edit_course(content: str):
         try:
             await course_message.edit(content=content)
+        except discord.NotFound:
+            print("❌ Le message de course Brook n'existe plus.")
         except discord.HTTPException as e:
             print(f"❌ Erreur animation Brook : {e}")
 
@@ -2426,7 +2440,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
     # Résultat final : toujours le même message de course.
     await edit_course(final_piste)
 
-    # Mettre à jour le panneau Brook
+    # Mettre à jour EXACTEMENT le panneau Brook qui a lancé la course.
     new_odds = generate_brook_odds()
     new_embed = discord.Embed(
         description=(
@@ -2438,21 +2452,25 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
     )
 
     try:
-        with get_db_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT channel_id FROM ai_channels WHERE ai_type = ?", ("brook",))
-            row = cur.fetchone()
+        if panel_message is not None:
+            await panel_message.edit(embed=new_embed, view=BrookBookmakerView(new_odds))
+        else:
+            # Secours pour les anciens boutons/messages : on retrouve le panneau Brook.
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT channel_id FROM ai_channels WHERE ai_type = ?", ("brook",))
+                row = cur.fetchone()
             if row:
                 channel = bot.get_channel(row[0])
                 if channel:
-                    async for message in channel.history(limit=20):
+                    async for message in channel.history(limit=50):
                         if message.author == bot.user and message.embeds:
-                            embed_desc = message.embeds[0].description if message.embeds else ""
-                            if embed_desc and "Brook" in embed_desc:
+                            desc = message.embeds[0].description or ""
+                            if "Guichet des Paris — BROOK" in desc:
                                 await message.edit(embed=new_embed, view=BrookBookmakerView(new_odds))
                                 break
     except Exception as e:
-        print(f"❌ Erreur lors de l'actualisation du panneau Brook : {e}")
+        print(f"❌ Erreur lors de la remise en place des boutons Brook : {type(e).__name__}: {e}")
 
 
 class BrookBookmakerView(ui.View):
@@ -2467,19 +2485,19 @@ class BrookBookmakerView(ui.View):
 
     @ui.button(label="Canabis", style=discord.ButtonStyle.primary, emoji="🐎", custom_id="brook_horse_1")
     async def horse_1(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BrookPMUBetModal(1, self.odds))
+        await interaction.response.send_modal(BrookPMUBetModal(1, self.odds, panel_message=interaction.message))
 
     @ui.button(label="Jolly Jumper", style=discord.ButtonStyle.primary, emoji="🐴", custom_id="brook_horse_2")
     async def horse_2(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BrookPMUBetModal(2, self.odds))
+        await interaction.response.send_modal(BrookPMUBetModal(2, self.odds, panel_message=interaction.message))
 
     @ui.button(label="Pégase", style=discord.ButtonStyle.primary, emoji="🦄", custom_id="brook_horse_3")
     async def horse_3(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BrookPMUBetModal(3, self.odds))
+        await interaction.response.send_modal(BrookPMUBetModal(3, self.odds, panel_message=interaction.message))
 
     @ui.button(label="Petit Tonnerre", style=discord.ButtonStyle.primary, emoji="🏇", custom_id="brook_horse_4")
     async def horse_4(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BrookPMUBetModal(4, self.odds))
+        await interaction.response.send_modal(BrookPMUBetModal(4, self.odds, panel_message=interaction.message))
 
 
 # ==========================================
@@ -4833,6 +4851,7 @@ async def on_ready():
         try:
             bot.add_view(PersistentMerchantView())
             bot.add_view(PersistentTroubadourView())
+            bot.add_view(BobArenaView())
             bot._persistent_views_registered = True
             print("🦊 Vue persistante du Marchand : OK")
             print("🪕 Vue persistante de Guillaume : OK")
