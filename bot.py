@@ -47,7 +47,7 @@ PUBLIC_LOG_CHANNEL_ID = 1540068629389910087  # Salon "taverne"
 
 def get_log_separator() -> str:
     """Génère un séparateur simple pour le salon B."""
-    return "─" * 60
+    return "─" * 50
 
 def format_with_separators(content: str) -> str:
     """Ajoute des séparateurs en haut et en bas du contenu."""
