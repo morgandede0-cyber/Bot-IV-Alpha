@@ -609,6 +609,7 @@ def get_player_quests(user_id: int):
                 "INSERT INTO player_quests (user_id, quest_date, quest_key, progress, completed, claimed) VALUES (?, ?, ?, 0, 0, 0)",
                 (user_id, today, q["key"])
             )
+            conn.commit()
         
         player_progress.append({
             "key": q["key"],
@@ -620,7 +621,6 @@ def get_player_quests(user_id: int):
             "claimed": claimed
         })
     
-    conn.commit()
     conn.close()
     return player_progress
 
@@ -664,8 +664,8 @@ def update_player_quest_progress(user_id: int, quest_key: str, amount: int = 1):
     cursor.execute("""
         UPDATE player_quests 
         SET completed = 1 
-        WHERE user_id = ? AND quest_date = ? AND quest_key = ? AND progress >= target AND completed = 0
-    """, (user_id, today, quest_key))
+        WHERE user_id = ? AND quest_date = ? AND quest_key = ? AND progress >= ? AND completed = 0
+    """, (user_id, today, quest_key, target))
     
     conn.commit()
     conn.close()
@@ -685,7 +685,6 @@ def claim_all_public_quests(user_id: int):
     if not all_completed:
         return None
     
-    # Calculer la récompense
     base_reward = 500
     total_reward = base_reward
     
@@ -3295,19 +3294,19 @@ async def pay(interaction: discord.Interaction, receiver: discord.Member, amount
     await interaction.followup.send(f"💸 {interaction.user.mention} ➔ **{format_currency(amount)}** à {receiver.mention} !", ephemeral=True)
 
 
-@bot.tree.command(name="setup", description="[ADMIN] Configure les salons pour la Banque, Jim, John, Brook, Bob, Marchand, Troubadour, Succès ou Quêtes")
+@bot.tree.command(name="setup", description="[ADMIN] Configure les salons des PNJ")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.choices(ai_type=[
-    app_commands.Choice(name="Tous les PNJ dans un salon unique (Carrefour PNJ)", value="all"),
-    app_commands.Choice(name="banque (DAB)", value="banque"),
-    app_commands.Choice(name="taverne (Jim)", value="taverne"),
-    app_commands.Choice(name="crime (John)", value="crime"),
-    app_commands.Choice(name="bookmaker (Brook)", value="brook"),
-    app_commands.Choice(name="arene (Bob le maître d'arme)", value="arene"),
-    app_commands.Choice(name="marchand (Tom)", value="marchand"),
-    app_commands.Choice(name="troubadour (Guillaume)", value="troubadour"),
-    app_commands.Choice(name="achievements (Salon des succès débloqués)", value="achievements"),
-    app_commands.Choice(name="quetes (Panneau des quêtes quotidiennes)", value="quetes")
+    app_commands.Choice(name="Tous les PNJ (Carrefour)", value="all"),
+    app_commands.Choice(name="Banque (DAB)", value="banque"),
+    app_commands.Choice(name="Taverne (Jim)", value="taverne"),
+    app_commands.Choice(name="Crime (John)", value="crime"),
+    app_commands.Choice(name="Bookmaker (Brook)", value="brook"),
+    app_commands.Choice(name="Arene (Bob)", value="arene"),
+    app_commands.Choice(name="Marchand (Tom)", value="marchand"),
+    app_commands.Choice(name="Troubadour (Guillaume)", value="troubadour"),
+    app_commands.Choice(name="Succes", value="achievements"),
+    app_commands.Choice(name="Quetes quotidiennes", value="quetes")
 ])
 async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.TextChannel):
     await interaction.response.defer(ephemeral=True)
@@ -3424,34 +3423,6 @@ async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.T
         )
         embed_troubadour.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
         await salon.send(embed=embed_troubadour, view=PersistentTroubadourView())
-
-        # Panneau des quêtes
-        quests = get_public_quests()
-        embed_quests = discord.Embed(
-            title=f"📋 Quêtes du Jour",
-            description="**8 quêtes sont à valider aujourd'hui !**\n\nTermine toutes les quêtes pour gagner ta récompense.\nClique sur le bouton ci-dessous pour suivre ta progression.",
-            color=discord.Color.gold()
-        )
-        
-        for i, q in enumerate(quests, 1):
-            embed_quests.add_field(
-                name=f"{q['label']}",
-                value=f"{q['desc']}\n`⏳ À valider`",
-                inline=False
-            )
-        
-        embed_quests.set_footer(text=f"Quêtes du {_today_str()} • Récompense : 500$")
-        
-        msg = await salon.send(embed=embed_quests, view=PublicQuestsView())
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO quest_channels (guild_id, channel_id, message_id) VALUES (?, ?, ?)",
-            (guild_id, salon.id, msg.id)
-        )
-        conn.commit()
-        conn.close()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -5317,7 +5288,6 @@ async def on_ready():
     except Exception as e:
         print(f"❌ ERREUR LISTE COMMANDES : {e}")
 
-    # Démarrer la tâche de rafraîchissement des quêtes
     bot.loop.create_task(refresh_public_quests())
     print("🔄 Tâche de rafraîchissement des quêtes démarrée")
 
