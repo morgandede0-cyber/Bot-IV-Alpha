@@ -45,40 +45,28 @@ PUBLIC_LOG_CHANNEL_ID = 1540068629389910087  # Salon "taverne"
 # SÉPARATEURS POUR LE SALON B
 # ==========================================
 
-def get_log_separator(style: str = "double") -> str:
-    """Génère un séparateur visuel pour le salon B."""
-    if style == "simple":
-        return "─" * 60
-    elif style == "double":
-        return "═" * 60
-    elif style == "dotted":
-        return "·" * 60
-    elif style == "title":
-        return "═══ ✦ ═══"
-    elif style == "event":
-        return "─ ─ ─ ─ ─ ─ ─ ─ ─ ─"
-    return "═" * 60
+def get_log_separator() -> str:
+    """Génère un séparateur simple pour le salon B."""
+    return "─" * 60
 
-async def send_public_log(content: str = None, embed: discord.Embed = None, file: discord.File = None, view: ui.View = None, separator: bool = True, separator_style: str = "double", use_embed_separator: bool = False):
-    """Envoie un message public dans le Salon B et retourne le message Discord."""
+async def send_public_log(content: str = None, embed: discord.Embed = None, file: discord.File = None, view: ui.View = None):
+    """Envoie un message public dans le Salon B avec des séparateurs en haut et en bas."""
     if PUBLIC_LOG_CHANNEL_ID:
         channel = bot.get_channel(PUBLIC_LOG_CHANNEL_ID)
         if channel:
             try:
-                # Si on veut un séparateur
-                if separator:
-                    sep_text = get_log_separator(separator_style)
-                    
-                    if use_embed_separator and embed:
-                        # Ajouter le séparateur dans l'embed (field vide)
-                        embed.add_field(name="\u200b", value=f"`{sep_text}`", inline=False)
-                        return await channel.send(content=content, embed=embed, file=file, view=view)
-                    else:
-                        # Envoyer d'abord le séparateur
-                        await channel.send(f"`{sep_text}`")
-                        return await channel.send(content=content, embed=embed, file=file, view=view)
-                else:
-                    return await channel.send(content=content, embed=embed, file=file, view=view)
+                sep = get_log_separator()
+                
+                # Envoyer le séparateur du haut
+                await channel.send(f"`{sep}`")
+                
+                # Envoyer le contenu
+                result = await channel.send(content=content, embed=embed, file=file, view=view)
+                
+                # Envoyer le séparateur du bas
+                await channel.send(f"`{sep}`")
+                
+                return result
             except Exception as e:
                 print(f"❌ Erreur envoi log public : {e}")
     return None
@@ -1227,8 +1215,6 @@ class DuelPFCView(ui.View):
                 await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.challenger.mention} !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
-                    separator=True,
-                    separator_style="double",
                     content=f"⚔️ **{self.challenger.display_name}** a remporté un duel PFC contre {self.opponent.display_name} ! +**{format_currency(self.bet)}**"
                 )
             else:
@@ -1239,8 +1225,6 @@ class DuelPFCView(ui.View):
                 await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.opponent.mention} !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
-                    separator=True,
-                    separator_style="double",
                     content=f"⚔️ **{self.opponent.display_name}** a remporté un duel PFC contre {self.challenger.display_name} ! +**{format_currency(self.bet)}**"
                 )
 
@@ -1309,20 +1293,16 @@ class DuelDiceView(ui.View):
                 await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.challenger.mention} ({c_score} vs {o_score}) !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
-                    separator=True,
-                    separator_style="double",
                     content=f"🎲 **{self.challenger.display_name}** a remporté un duel de dés contre {self.opponent.display_name} ! +**{format_currency(self.bet)}**"
                 )
             else:
                 update_wallet(self.opponent.id, self.bet)
                 update_wallet(self.challenger.id, -self.bet)
                 update_game_stats(self.opponent.id, won=True)
-                update_game_stats(self.challenger.id, won=False)
+                update_game_stats(self.opponent.id, won=False)
                 await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.opponent.mention} ({o_score} vs {c_score}) !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
-                    separator=True,
-                    separator_style="double",
                     content=f"🎲 **{self.opponent.display_name}** a remporté un duel de dés contre {self.challenger.display_name} ! +**{format_currency(self.bet)}**"
                 )
 
@@ -1388,8 +1368,6 @@ class DuelAcceptView(ui.View):
                     pass
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"⏰ **{self.challenger.display_name}** a défié {self.opponent.display_name} mais celui-ci n'a pas répondu à temps ! (30s) 🐔"
             )
         except Exception as e:
@@ -1414,8 +1392,6 @@ class DuelAcceptView(ui.View):
 
         location = "de la taverne" if self.from_jim else "de l'arène"
         await send_public_log(
-            separator=True,
-            separator_style="double",
             content=f"⚔️ **{self.challenger.display_name}** et **{self.opponent.display_name}** s'affrontent dans un duel {location} ! Mise : **{format_currency(self.bet)}**"
         )
 
@@ -1448,8 +1424,6 @@ class DuelAcceptView(ui.View):
         )
         await interaction.response.edit_message(embed=embed, view=self)
         await send_public_log(
-            separator=True,
-            separator_style="double",
             content=f"❌ **{self.opponent.display_name}** a refusé le duel de **{self.challenger.display_name}** !"
         )
 
@@ -1492,8 +1466,6 @@ class DepositModal(ui.Modal, title="📥 DAB - Dépôt de billets"):
             await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
 
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"💵 **{interaction.user.display_name}** a déposé **{format_currency(val)}** à la banque !"
             )
 
@@ -1789,8 +1761,6 @@ class JimTavernView(ui.View):
         await check_and_unlock_achievements(user_id, bot_client=bot)
 
         await send_public_log(
-            separator=True,
-            separator_style="double",
             content=f"🍺 **{interaction.user.display_name}** a commandé une pinte chez Jim ! (#{beers_today}/5) {outcome}"
         )
 
@@ -1862,8 +1832,6 @@ class JohnRobSelect(ui.UserSelect):
             await check_and_unlock_achievements(user_id, bot_client=bot)
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🥷 **{interaction.user.display_name}** a réussi à voler **{format_currency(stolen)}** à {victim.display_name} !"
             )
             
@@ -1874,8 +1842,6 @@ class JohnRobSelect(ui.UserSelect):
             
         elif roll < 0.7:  # 30% - Échec
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🥷 **{interaction.user.display_name}** a tenté de voler {victim.display_name} mais a échoué !"
             )
             
@@ -1891,8 +1857,6 @@ class JohnRobSelect(ui.UserSelect):
                 update_wallet(victim.id, stolen_from_thief)
                 
                 await send_public_log(
-                    separator=True,
-                    separator_style="double",
                     content=f"💥 **{interaction.user.display_name}** s'est fait tabasser et dépouiller par {victim.display_name} ! Perte : **{format_currency(stolen_from_thief)}**"
                 )
                 
@@ -1902,8 +1866,6 @@ class JohnRobSelect(ui.UserSelect):
                 )
             else:
                 await send_public_log(
-                    separator=True,
-                    separator_style="double",
                     content=f"💥 **{interaction.user.display_name}** s'est fait repérer par {victim.display_name} mais le voleur était trop pauvre pour se faire dépouiller !"
                 )
                 
@@ -1941,8 +1903,6 @@ class BrinksVaultModal(ui.Modal, title="🔒 Coffre de la Brinks - Code à 4 chi
             await check_and_unlock_achievements(user_id, bot_client=bot)
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🔐 **{interaction.user.display_name}** a réussi le braquage de la Brinks ! Il a empoché **{format_currency(self.prize)}** !"
             )
             
@@ -1986,8 +1946,6 @@ class BrinksVaultModal(ui.Modal, title="🔒 Coffre de la Brinks - Code à 4 chi
                     conn.commit()
 
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🚨 **{interaction.user.display_name}** s'est fait prendre lors d'un braquage de la Brinks ! Amende : **-{format_currency(fine)}**"
             )
 
@@ -2038,8 +1996,6 @@ class JohnCrimeView(ui.View):
             await check_and_unlock_achievements(user_id, bot_client=bot)
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🥷 **{interaction.user.display_name}** a réussi un crime et a gagné **{format_currency(gain)}** !"
             )
             
@@ -2049,8 +2005,6 @@ class JohnCrimeView(ui.View):
             if loss > 0:
                 update_wallet(user_id, -loss)
                 await send_public_log(
-                    separator=True,
-                    separator_style="double",
                     content=f"🚨 **{interaction.user.display_name}** s'est fait prendre par la milice lors d'un crime ! Amende : **{format_currency(loss)}**"
                 )
                 await interaction.followup.send(f"🚨 **[JOHN LE BRIGAND]** La milice t'a repéré ! Amende : -**{format_currency(loss)}**", ephemeral=True)
@@ -2153,8 +2107,6 @@ class ArenaFightView(ui.View):
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"⚔️ **{interaction.user.display_name}** a vaincu Bob dans l'arène après {self.round_count} rounds et remporte **{format_currency(gain)}** !"
             )
             
@@ -2182,8 +2134,6 @@ class ArenaFightView(ui.View):
             update_game_stats(self.user_id, won=False)
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"💀 **{interaction.user.display_name}** a été vaincu par Bob dans l'arène après {self.round_count} rounds ! (-{format_currency(self.bet)})"
             )
             
@@ -2215,8 +2165,6 @@ async def run_arena_fight(interaction: discord.Interaction, bet: int):
     
     # Envoyer un message public dans le salon B
     await send_public_log(
-        separator=True,
-        separator_style="double",
         content=f"⚔️ **{interaction.user.display_name}** entre dans l'arène pour affronter Bob ! Mise : **{format_currency(bet)}**"
     )
     
@@ -2384,8 +2332,6 @@ async def run_pmu_game(interaction: discord.Interaction, cheval: int, bet: int):
         res_msg = f"🏆 **[PMU] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! Ton pari sur **{chevaux[cheval]['nom']}** (cote x{cote}) passe haut la main ! +**{format_currency(gain)}**"
         
         await send_public_log(
-            separator=True,
-            separator_style="double",
             content=f"🏇 **{interaction.user.display_name}** a gagné un pari PMU sur **{chevaux[cheval]['nom']}** (x{cote}) et remporte **{format_currency(gain)}** !"
         )
     else:
@@ -2394,8 +2340,6 @@ async def run_pmu_game(interaction: discord.Interaction, cheval: int, bet: int):
         res_msg = f"❌ **[PMU] PERDU !** C'est #{gagnant} ({chevaux[gagnant]['nom']}) qui a gagné. Ton pari sur **{chevaux[cheval]['nom']}** (cote x{cote}) est perdant. -**{format_currency(bet)}**"
         
         await send_public_log(
-            separator=True,
-            separator_style="double",
             content=f"🏇 **{interaction.user.display_name}** a perdu un pari PMU sur **{chevaux[cheval]['nom']}** (x{cote}). Perte : **{format_currency(bet)}**"
         )
 
@@ -2494,8 +2438,6 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         res_msg = f"🏆 **[BROOK LA BOOKMAKEUSE] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! Ton pari sur **{chevaux[horse_choice]['nom']}** (cote x{cote}) passe haut la main ! +**{format_currency(gain)}**"
         
         await send_public_log(
-            separator=True,
-            separator_style="double",
             content=f"🏇 **{interaction.user.display_name}** a gagné un pari Brook sur **{chevaux[horse_choice]['nom']}** (x{cote}) et remporte **{format_currency(gain)}** !"
         )
     else:
@@ -2504,8 +2446,6 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         res_msg = f"❌ **[BROOK LA BOOKMAKEUSE] PERDU !** C'est #{gagnant} ({chevaux[gagnant]['nom']}) qui a gagné. Ton pari sur **{chevaux[horse_choice]['nom']}** (cote x{cote}) est perdant. -**{format_currency(bet)}**"
         
         await send_public_log(
-            separator=True,
-            separator_style="double",
             content=f"🏇 **{interaction.user.display_name}** a perdu un pari Brook sur **{chevaux[horse_choice]['nom']}** (x{cote}). Perte : **{format_currency(bet)}**"
         )
 
@@ -3021,8 +2961,6 @@ async def work(interaction: discord.Interaction):
     await check_and_unlock_achievements(user_id, bot_client=bot)
 
     await send_public_log(
-        separator=True,
-        separator_style="double",
         content=f"💼 **{interaction.user.display_name}** a travaillé et gagné **{format_currency(gain)}** !"
     )
 
@@ -3056,8 +2994,6 @@ async def pay(interaction: discord.Interaction, receiver: discord.Member, amount
     update_quest_progress(interaction.user.id, "pay_sent", 1)
     
     await send_public_log(
-        separator=True,
-        separator_style="double",
         content=f"💸 **{interaction.user.display_name}** a envoyé **{format_currency(amount)}** à {receiver.display_name} !"
     )
     
@@ -3520,8 +3456,6 @@ class BlackjackView(ui.View):
             await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🃏 **{interaction.user.display_name}** a fait un Blackjack ! +**{format_currency(gain)}**"
             )
             
@@ -3535,8 +3469,6 @@ class BlackjackView(ui.View):
             update_game_stats(self.game.user_id, won=False)
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🃏 **{interaction.user.display_name}** a fait un BUST au Blackjack ! -**{format_currency(self.game.bet)}**"
             )
             
@@ -3565,8 +3497,6 @@ class BlackjackView(ui.View):
             res = f"🎉 Banque > 21 ! +{format_currency(gain)}"
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🃏 **{interaction.user.display_name}** a gagné au Blackjack ! +**{format_currency(gain)}**"
             )
         elif player_score > dealer_score:
@@ -3577,8 +3507,6 @@ class BlackjackView(ui.View):
             res = f"🎉 Gagné ! +{format_currency(gain)}"
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🃏 **{interaction.user.display_name}** a gagné au Blackjack ! +**{format_currency(gain)}**"
             )
         elif player_score < dealer_score:
@@ -3587,8 +3515,6 @@ class BlackjackView(ui.View):
             res = "❌ Perdu !"
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🃏 **{interaction.user.display_name}** a perdu au Blackjack ! -**{format_currency(self.game.bet)}**"
             )
         else:
@@ -3658,8 +3584,6 @@ async def run_slots_game(interaction: discord.Interaction, bet: int):
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         
         await send_public_log(
-            separator=True,
-            separator_style="double",
             content=f"🪙 **{interaction.user.display_name}** a fait un TRIPLE aux slots ! +**{format_currency(reward)}**"
         )
     elif f1 == f2 or f2 == f3 or f1 == f3:
@@ -3670,8 +3594,6 @@ async def run_slots_game(interaction: discord.Interaction, bet: int):
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         
         await send_public_log(
-            separator=True,
-            separator_style="double",
             content=f"🪙 **{interaction.user.display_name}** a fait un DUO aux slots ! +**{format_currency(reward)}**"
         )
     else:
@@ -3680,8 +3602,6 @@ async def run_slots_game(interaction: discord.Interaction, bet: int):
         update_game_stats(interaction.user.id, won=False)
         
         await send_public_log(
-            separator=True,
-            separator_style="double",
             content=f"🪙 **{interaction.user.display_name}** a perdu aux slots ! -**{format_currency(bet)}**"
         )
 
@@ -3762,8 +3682,6 @@ class DiceView(ui.View):
             status = f"VICTOIRE! +{format_currency(self.bet)}"
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🎲 **{interaction.user.display_name}** a gagné aux dés ! +**{format_currency(self.bet)}**"
             )
         elif (p1 + p2) < (d1 + d2):
@@ -3772,8 +3690,6 @@ class DiceView(ui.View):
             status = f"PERDU! -{format_currency(self.bet)}"
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🎲 **{interaction.user.display_name}** a perdu aux dés ! -**{format_currency(self.bet)}**"
             )
         else:
@@ -3872,8 +3788,6 @@ class RouletteView(ui.View):
             status = f"GAGNÉ! +{format_currency(reward)}"
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🎡 **{interaction.user.display_name}** a gagné à la roulette ({color}) ! +**{format_currency(reward)}**"
             )
         else:
@@ -3882,8 +3796,6 @@ class RouletteView(ui.View):
             status = f"PERDU! -{format_currency(self.bet)}"
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🎡 **{interaction.user.display_name}** a perdu à la roulette ({choice}) ! -**{format_currency(self.bet)}**"
             )
 
@@ -3961,8 +3873,6 @@ class RussianRouletteView(ui.View):
             update_game_stats(self.user_id, won=False)
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🔫 **{interaction.user.display_name}** s'est fait tirer dessus à la roulette russe ! -**{format_currency(self.bet)}**"
             )
             
@@ -3993,8 +3903,6 @@ class RussianRouletteView(ui.View):
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"🔫 **{interaction.user.display_name}** a survécu à 5 tirs de roulette russe et remporte **{format_currency(total_gain)}** !"
             )
             
@@ -4043,8 +3951,6 @@ class RussianRouletteView(ui.View):
         await check_and_unlock_achievements(self.user_id, bot_client=bot)
         
         await send_public_log(
-            separator=True,
-            separator_style="double",
             content=f"🔫 **{interaction.user.display_name}** a encaissé après {self.current_shot} tirs de roulette russe ! +**{format_currency(won)}**"
         )
         
@@ -4168,8 +4074,6 @@ class PFCView(ui.View):
             face = "(^o^) 🏆"
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"✂️ **{interaction.user.display_name}** a gagné au PFC ! +**{format_currency(self.bet)}**"
             )
         else:
@@ -4179,8 +4083,6 @@ class PFCView(ui.View):
             face = "(T_T) 💀"
             
             await send_public_log(
-                separator=True,
-                separator_style="double",
                 content=f"✂️ **{interaction.user.display_name}** a perdu au PFC ! -**{format_currency(self.bet)}**"
             )
 
@@ -4250,8 +4152,6 @@ async def run_poker_game(interaction: discord.Interaction, mise: int):
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         
         await send_public_log(
-            separator=True,
-            separator_style="double",
             content=f"⚜️ **{interaction.user.display_name}** a fait un {res} au poker ! +**{format_currency(gain)}**"
         )
     else:
@@ -4259,8 +4159,6 @@ async def run_poker_game(interaction: discord.Interaction, mise: int):
         update_game_stats(interaction.user.id, won=False)
         
         await send_public_log(
-            separator=True,
-            separator_style="double",
             content=f"⚜️ **{interaction.user.display_name}** a perdu au poker ({res}) ! -**{format_currency(mise)}**"
         )
 
@@ -4775,8 +4673,6 @@ class TroubadourPaginationView(ui.View):
         story_text = EPISODE_STORIES.get(self.current_ep, "« Une histoire mystérieuse... »")
 
         await send_public_log(
-            separator=True,
-            separator_style="double",
             content=f"📜 **{self.member.display_name}** a débloqué le chapitre **{self.current_ep}** de l'histoire de Guillaume le Troubadour !"
         )
 
