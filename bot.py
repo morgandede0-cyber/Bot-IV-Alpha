@@ -41,40 +41,12 @@ TEST_MODE_ENABLED = False
 
 PUBLIC_LOG_CHANNEL_ID = 1540068629389910087  # Salon "taverne"
 
-# ==========================================
-# SÉPARATEURS POUR LE SALON B
-# ==========================================
-
-def get_log_separator() -> str:
-    """Génère un séparateur simple pour le salon B."""
-    return "─" * 50
-
-def format_with_separators(content: str) -> str:
-    """Ajoute des séparateurs en haut et en bas du contenu."""
-    sep = get_log_separator()
-    return f"`{sep}`\n{content}\n`{sep}`"
-
 async def send_public_log(content: str = None, embed: discord.Embed = None, file: discord.File = None, view: ui.View = None):
-    """Envoie un message public dans le Salon B avec des séparateurs intégrés."""
+    """Envoie un message public dans le Salon B sans séparateurs."""
     if PUBLIC_LOG_CHANNEL_ID:
         channel = bot.get_channel(PUBLIC_LOG_CHANNEL_ID)
         if channel:
             try:
-                # Si c'est un embed, on ajoute le séparateur dans l'embed
-                if embed:
-                    sep = get_log_separator()
-                    # Créer un nouvel embed ou ajouter un field avec le séparateur
-                    if content:
-                        embed.description = f"`{sep}`\n{content}\n`{sep}`"
-                    else:
-                        embed.description = f"`{sep}`\n{embed.description or ''}\n`{sep}`"
-                    return await channel.send(embed=embed, file=file, view=view)
-                
-                # Si c'est du texte simple, on formate avec les séparateurs
-                if content:
-                    formatted_content = format_with_separators(content)
-                    return await channel.send(content=formatted_content, file=file, view=view)
-                
                 return await channel.send(content=content, embed=embed, file=file, view=view)
             except Exception as e:
                 print(f"❌ Erreur envoi log public : {e}")
@@ -4134,9 +4106,7 @@ async def pfc(interaction: discord.Interaction):
 
 async def run_poker_game(interaction: discord.Interaction, mise: int):
     if not await validate_game_bet(interaction, "poker-solitaire", mise):
-        return
-
-    symboles = ["♠️", "♥️", "♦️", "♣️"]
+        return    symboles = ["♠️", "♥️", "♦️", "♣️"]
     valeurs = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
     main = [f"[{random.choice(valeurs)}{random.choice(symboles)}]" for _ in range(5)]
     v_main = [c[1:-1] for c in main]
