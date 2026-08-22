@@ -790,12 +790,11 @@ def get_daily_quests(user_id: int):
             {"key": "arena_fight", "desc_tpl": "Affronter Bob dans l'arène {target} fois", "target_range": (1, 2)},
             {"key": "duel_played", "desc_tpl": "Faire {target} duel(s) PvP", "target_range": (1, 2)},
             {"key": "bank_deposit", "desc_tpl": "Déposer à la banque {target} fois", "target_range": (1, 3)},
-            {"key": "pay_sent", "desc_tpl": "Envoyer de l'argent via /pay {target} fois", "target_range": (1, 2)},
             {"key": "crime_attempt", "desc_tpl": "Tenter un crime chez John {target} fois", "target_range": (1, 3)},
             {"key": "pmu_bet", "desc_tpl": "Parier chez Brook {target} fois", "target_range": (1, 3)},
             {"key": "vault_attempt", "desc_tpl": "Braquer la Brinks {target} fois", "target_range": (1, 2)},
             {"key": "money_earned", "desc_tpl": "Gagner un total de {target} $", "target_range": (500, 1500)},
-            {"key": "beer_drunk", "desc_tpl": "Commander {target} pinte(s) chez Jim", "target_range": (1, 3)},
+            {"key": "beer_drunk", "desc_tpl": "Commander {target} pinte(s) chez Jim", "target_range": (2, 5)},
         ]
         chosen = random.sample(quest_pool, k=min(5, len(quest_pool)))
         quests = []
