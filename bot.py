@@ -196,7 +196,7 @@ def init_db():
             )
         """)
 
-        # ========== NOUVELLE TABLE POUR LES DONNEES D'ACHIEVEMENTS ==========
+        # ========== TABLE POUR LES DONNEES D'ACHIEVEMENTS ==========
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS achievement_data (
                 user_id INTEGER PRIMARY KEY,
@@ -394,7 +394,6 @@ def get_achievement_data(user_id: int) -> dict:
 
 def increment_achievement_data(user_id: int, **kwargs):
     """Incrémente les données d'achievement d'un joueur"""
-    # Filtrer les valeurs positives
     increments = {k: v for k, v in kwargs.items() if isinstance(v, int) and v > 0}
     if not increments:
         return
@@ -402,10 +401,8 @@ def increment_achievement_data(user_id: int, **kwargs):
     with get_db_connection() as conn:
         cursor = conn.cursor()
         
-        # S'assurer que l'utilisateur existe
         cursor.execute("INSERT OR IGNORE INTO achievement_data (user_id) VALUES (?)", (user_id,))
         
-        # Construire la requête d'incrémentation
         set_clause = ", ".join([f"{key} = COALESCE({key}, 0) + ?" for key in increments])
         values = list(increments.values()) + [datetime.datetime.now().isoformat(), user_id]
         
@@ -428,7 +425,6 @@ def get_achievement_value(user_id: int, field: str) -> int:
 # ==========================================
 
 def track_game_played(user_id: int, won: bool = False, lost: bool = False):
-    """Track une partie jouée"""
     increments = {"games_played": 1}
     if won:
         increments["games_won"] = 1
@@ -437,55 +433,45 @@ def track_game_played(user_id: int, won: bool = False, lost: bool = False):
     increment_achievement_data(user_id, **increments)
 
 def track_beer(user_id: int):
-    """Track une pinte bue"""
     increment_achievement_data(user_id, beers_drunk=1)
 
 def track_crime(user_id: int, success: bool = False):
-    """Track un crime"""
     increments = {"crimes_attempts": 1}
     if success:
         increments["crimes_success"] = 1
     increment_achievement_data(user_id, **increments)
 
 def track_vault(user_id: int, success: bool = False):
-    """Track un braquage de la Brinks"""
     increments = {"vault_attempts": 1}
     if success:
         increments["vault_success"] = 1
     increment_achievement_data(user_id, **increments)
 
 def track_pmu(user_id: int, won: bool = False):
-    """Track un pari PMU"""
     increments = {"pmu_bets": 1}
     if won:
         increments["pmu_wins"] = 1
     increment_achievement_data(user_id, **increments)
 
 def track_duel(user_id: int, won: bool = False):
-    """Track un duel"""
     increments = {"duels_played": 1}
     if won:
         increments["duels_won"] = 1
     increment_achievement_data(user_id, **increments)
 
 def track_work(user_id: int):
-    """Track un travail"""
     increment_achievement_data(user_id, work_done=1)
 
 def track_bank_deposit(user_id: int):
-    """Track un dépôt bancaire"""
     increment_achievement_data(user_id, bank_deposits=1)
 
 def track_pay_sent(user_id: int):
-    """Track un envoi d'argent"""
     increment_achievement_data(user_id, pay_sent=1)
 
 def track_quest_claimed(user_id: int):
-    """Track une quête réclamée"""
     increment_achievement_data(user_id, quests_claimed=1)
 
 def track_game_win(user_id: int, game_type: str):
-    """Track une victoire à un jeu spécifique"""
     game_mapping = {
         "blackjack": "blackjack_wins",
         "slots": "slots_wins",
@@ -501,29 +487,25 @@ def track_game_win(user_id: int, game_type: str):
         increment_achievement_data(user_id, **{field: 1})
 
 def track_larcin(user_id: int, success: bool = False):
-    """Track un larcin"""
     if success:
         increment_achievement_data(user_id, larcins_success=1)
 
 
 # ==========================================
-# 3.3. FONCTIONS REDIS (adaptées)
+# 3.3. FONCTIONS REDIS
 # ==========================================
 
 def invalidate_user_cache(user_id: int):
-    """Invalide le cache Redis d'un utilisateur"""
     if REDIS_AVAILABLE and redis_client:
         redis_client.delete(f"user:{user_id}")
         redis_client.delete(f"user:{user_id}:wallet")
         redis_client.delete(f"user:{user_id}:bank")
 
 def invalidate_leaderboard():
-    """Invalide le classement en cache"""
     if REDIS_AVAILABLE and redis_client:
         redis_client.delete("leaderboard:top10")
 
 def get_user_cached(user_id: int):
-    """Récupère un utilisateur avec cache Redis"""
     if not REDIS_AVAILABLE or not redis_client:
         return get_user(user_id)
     
@@ -547,10 +529,8 @@ def get_user_cached(user_id: int):
         except:
             pass
     
-    # Récupérer depuis SQL
     data = get_user(user_id)
     
-    # Mettre en cache (5 minutes)
     cache_data = {
         "wallet": data[0],
         "bank": data[1],
@@ -568,7 +548,6 @@ def get_user_cached(user_id: int):
     return data
 
 def check_cooldown_redis(user_id: int, command_name: str, duration: int) -> int:
-    """Vérifie un cooldown avec Redis ou fallback mémoire"""
     if TEST_MODE_ENABLED:
         return 0
     
@@ -582,7 +561,6 @@ def check_cooldown_redis(user_id: int, command_name: str, duration: int) -> int:
         redis_client.setex(key, duration, "1")
         return 0
     
-    # Fallback sur l'ancien système
     now = int(time.time())
     key = (user_id, command_name)
     expire = cooldowns.get(key, 0)
@@ -592,7 +570,6 @@ def check_cooldown_redis(user_id: int, command_name: str, duration: int) -> int:
     return 0
 
 def clear_cooldown_redis(user_id: int, command_name: str = None):
-    """Supprime un cooldown Redis"""
     if REDIS_AVAILABLE and redis_client:
         if command_name:
             redis_client.delete(f"cooldown:{user_id}:{command_name}")
@@ -601,7 +578,6 @@ def clear_cooldown_redis(user_id: int, command_name: str = None):
             if keys:
                 redis_client.delete(*keys)
     else:
-        # Fallback sur l'ancien système
         if command_name:
             cooldowns.pop((user_id, command_name), None)
         else:
@@ -610,25 +586,21 @@ def clear_cooldown_redis(user_id: int, command_name: str = None):
                 cooldowns.pop(k, None)
 
 def update_leaderboard(user_id: int, score: int):
-    """Met à jour le classement des richesses dans Redis"""
     if REDIS_AVAILABLE and redis_client:
         redis_client.zadd("leaderboard:richest", {str(user_id): score})
 
 def get_top_10_richest():
-    """Récupère le top 10 des plus riches depuis Redis"""
     if REDIS_AVAILABLE and redis_client:
         return redis_client.zrevrange("leaderboard:richest", 0, 9, withscores=True)
     return None
 
 def get_user_rank(user_id: int):
-    """Récupère le rang d'un utilisateur"""
     if REDIS_AVAILABLE and redis_client:
         rank = redis_client.zrevrank("leaderboard:richest", str(user_id))
         return rank + 1 if rank is not None else None
     return None
 
 def check_rate_limit(user_id: int, action: str, max_requests: int = 5, window: int = 60) -> bool:
-    """Vérifie le rate limiting avec Redis"""
     if TEST_MODE_ENABLED:
         return True
     
@@ -644,7 +616,6 @@ def check_rate_limit(user_id: int, action: str, max_requests: int = 5, window: i
     return count <= max_requests
 
 def get_redis_stats():
-    """Récupère les statistiques Redis"""
     if not REDIS_AVAILABLE or not redis_client:
         return None
     
@@ -701,10 +672,8 @@ def update_wallet(user_id: int, amount: int):
         )
         conn.commit()
     
-    # Invalider le cache Redis
     invalidate_user_cache(user_id)
     
-    # Mettre à jour le leaderboard
     if REDIS_AVAILABLE and redis_client:
         wallet, bank, _, _, _, _, _, _, _ = get_user_cached(user_id)
         update_leaderboard(user_id, wallet + bank)
@@ -726,10 +695,8 @@ def update_game_stats(user_id: int, won: bool):
             cursor.execute("UPDATE users SET games_played = COALESCE(games_played, 0) + 1, games_lost = COALESCE(games_lost, 0) + 1 WHERE user_id = ?", (user_id,))
         conn.commit()
     
-    # Invalider le cache Redis
     invalidate_user_cache(user_id)
     
-    # Tracker les données d'achievement
     track_game_played(user_id, won=won, lost=not won)
     
     update_quest_progress(user_id, "games_played", 1)
@@ -925,7 +892,6 @@ def claim_all_public_quests(user_id: int):
     
     update_wallet(user_id, total_reward)
     
-    # Tracker les données d'achievement
     track_quest_claimed(user_id)
     asyncio.create_task(check_and_unlock_achievements(user_id, bot))
     
@@ -1099,7 +1065,6 @@ def claim_all_daily_quests(user_id: int):
 
     update_wallet(user_id, total_reward)
     
-    # Tracker les données d'achievement
     track_quest_claimed(user_id)
     asyncio.create_task(check_and_unlock_achievements(user_id, bot))
 
@@ -1112,7 +1077,7 @@ def claim_all_daily_quests(user_id: int):
 
 
 # ==========================================
-# 3.7. SYSTÈME DES ACHIEVEMENTS (NOUVEAU)
+# 3.7. SYSTÈME DES ACHIEVEMENTS (STYLE MEE6)
 # ==========================================
 
 TIERS_NAMES = {1: "Bronze"}
@@ -1120,24 +1085,12 @@ TIERS_COLORS = {1: "#CD7F32"}
 
 ACHIEVEMENTS_DEFS = {}
 ACHIEVEMENTS_LOADED = False
-
 GITHUB_ACHIEVEMENTS_URL = "https://raw.githubusercontent.com/morgandede0-cyber/Bot-IV-Alpha/main/achievements_list.json"
 
 
 async def load_achievements_from_github():
+    """Charge les achievements depuis GitHub"""
     global ACHIEVEMENTS_DEFS, ACHIEVEMENTS_LOADED
-    
-    FALLBACK_ACHIEVEMENTS = {
-        "1": {
-            "key": "games_master",
-            "title": "Maître des Jeux",
-            "desc": "Gagner des parties dans les jeux de casino.",
-            "thresholds": {"1": 1},
-            "rewards": {"1": 200},
-            "category": "Jeux",
-            "tier": "Commun"
-        }
-    }
     
     try:
         async with aiohttp.ClientSession() as session:
@@ -1150,208 +1103,163 @@ async def load_achievements_from_github():
                         print(f"✅ {len(ACHIEVEMENTS_DEFS)} succès chargés depuis GitHub")
                         return True
                     else:
-                        print("⚠️ Fichier JSON invalide ou vide, utilisation du fallback")
-                        ACHIEVEMENTS_DEFS = FALLBACK_ACHIEVEMENTS
-                        ACHIEVEMENTS_LOADED = True
+                        print("⚠️ Fichier JSON invalide ou vide")
+                        ACHIEVEMENTS_LOADED = False
                         return False
                 else:
-                    print(f"⚠️ Erreur HTTP {response.status}, utilisation du fallback")
-                    ACHIEVEMENTS_DEFS = FALLBACK_ACHIEVEMENTS
-                    ACHIEVEMENTS_LOADED = True
+                    print(f"⚠️ Erreur HTTP {response.status}")
+                    ACHIEVEMENTS_LOADED = False
                     return False
     except Exception as e:
-        print(f"❌ Erreur chargement succès: {e}, utilisation du fallback")
-        ACHIEVEMENTS_DEFS = FALLBACK_ACHIEVEMENTS
-        ACHIEVEMENTS_LOADED = True
+        print(f"❌ Erreur chargement succès: {e}")
+        ACHIEVEMENTS_LOADED = False
         return False
 
 
-def evaluate_stat_for_achievement(ach_id: str, user_id: int) -> int:
-    """Évalue la progression d'un joueur pour un achievement par son ID"""
-    data = get_achievement_data(user_id)
-    
-    try:
-        ach_num = int(ach_id)
-    except ValueError:
+def evaluate_stat_for_achievement(ach_key: str, user_id: int) -> int:
+    """Évalue la progression d'un joueur pour un achievement - Style MEE6"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Récupérer les stats du joueur
+        cursor.execute("""
+            SELECT games_played, games_won, beers_today
+            FROM users WHERE user_id = ?
+        """, (user_id,))
+        
+        row = cursor.fetchone()
+        if not row:
+            return 0
+        
+        games_played, games_won, beers_today = row
+        games_played = games_played or 0
+        games_won = games_won or 0
+        beers_today = beers_today or 0
+        
+        # Compter les quêtes réclamées
+        cursor.execute("SELECT COUNT(*) FROM player_quests WHERE user_id = ? AND claimed = 1", (user_id,))
+        player_quests = cursor.fetchone()[0] or 0
+        cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
+        daily_quests = cursor.fetchone()[0] or 0
+        total_quests = player_quests + daily_quests
+        
+        # === MAPPING STYLE MEE6 ===
+        if ach_key.startswith("quest_") or ach_key.startswith("daily_"):
+            return total_quests
+        
+        if ach_key.startswith("arena_"):
+            if "essai" in ach_key or "assidu" in ach_key:
+                return games_played
+            return games_won
+        
+        if ach_key.startswith("pmu_"):
+            return games_won
+        
+        if ach_key.startswith("crime_"):
+            return games_played
+        
+        if ach_key.startswith("vault_"):
+            return games_played
+        
+        if ach_key.startswith("duel_"):
+            if "premier" in ach_key or "bretteur" in ach_key:
+                return games_played
+            return games_won
+        
+        if ach_key.startswith("taverne_"):
+            return beers_today
+        
+        if ach_key.startswith("bank_"):
+            return games_played
+        
+        if ach_key.startswith("larcin_"):
+            return games_played
+        
         return 0
-    
-    # Mapping des IDs vers les champs de données
-    mapping = {
-        # Quêtes (1-5)
-        1: "quests_claimed",
-        2: "quests_claimed",
-        3: "quests_claimed",
-        4: "quests_claimed",
-        5: "quests_claimed",
-        
-        # Arène (6-10)
-        6: "games_played",
-        7: "games_played",
-        8: "games_won",
-        9: "games_won",
-        10: "games_won",
-        
-        # PMU (11-15)
-        11: "pmu_wins",
-        12: "pmu_wins",
-        13: "pmu_wins",
-        14: "pmu_wins",
-        15: "pmu_wins",
-        
-        # Crime (16-20)
-        16: "crimes_success",
-        17: "crimes_success",
-        18: "crimes_success",
-        19: "crimes_success",
-        20: "crimes_success",
-        
-        # Brinks (21-25)
-        21: "vault_attempts",
-        22: "vault_attempts",
-        23: "vault_attempts",
-        24: "vault_attempts",
-        25: "vault_attempts",
-        
-        # Duel (26-30)
-        26: "duels_played",
-        27: "duels_played",
-        28: "duels_won",
-        29: "duels_won",
-        30: "duels_won",
-        
-        # Daily (31-35)
-        31: "quests_claimed",
-        32: "quests_claimed",
-        33: "quests_claimed",
-        34: "quests_claimed",
-        35: "quests_claimed",
-        
-        # Taverne (36-40)
-        36: "beers_drunk",
-        37: "beers_drunk",
-        38: "beers_drunk",
-        39: "beers_drunk",
-        40: "beers_drunk",
-        
-        # Banque (41-45)
-        41: "bank_deposits",
-        42: "bank_deposits",
-        43: "bank_deposits",
-        44: "bank_deposits",
-        45: "bank_deposits",
-        
-        # Larcin (46-50)
-        46: "larcins_success",
-        47: "larcins_success",
-        48: "larcins_success",
-        49: "larcins_success",
-        50: "larcins_success",
-    }
-    
-    field = mapping.get(ach_num)
-    if field:
-        return data.get(field, 0)
-    
-    return 0
 
 
 async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
+    """Vérifie et débloque les achievements d'un joueur - Style MEE6"""
     global ACHIEVEMENTS_DEFS, ACHIEVEMENTS_LOADED
     
     if not ACHIEVEMENTS_LOADED:
         await load_achievements_from_github()
     
     if not ACHIEVEMENTS_DEFS:
-        print("⚠️ Aucun succès chargé")
         return []
     
     today = time.strftime("%Y-%m-%d")
     unlocked_now = []
-
+    
+    # Récupérer les achievements déjà débloqués
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT achievement_key, tier FROM user_achievements WHERE user_id = ?", (user_id,))
-        user_tiers = {row[0]: row[1] for row in cursor.fetchall()}
-
+        cursor.execute("SELECT achievement_key FROM user_achievements WHERE user_id = ?", (user_id,))
+        unlocked_keys = {row[0] for row in cursor.fetchall()}
+    
+    # Vérifier chaque achievement
     for ach_id, data in ACHIEVEMENTS_DEFS.items():
         ach_key = data.get("key", ach_id)
         
-        if ach_key in user_tiers:
+        if ach_key in unlocked_keys:
             continue
-
-        current_stat = evaluate_stat_for_achievement(ach_id, user_id)
+        
+        # Calculer la progression
+        progress = evaluate_stat_for_achievement(ach_key, user_id)
         threshold = data["thresholds"]["1"]
         
-        if current_stat >= threshold:
-            target_tier = 1
-            reward_sum = data["rewards"]["1"]
+        if progress >= threshold:
+            reward = data["rewards"]["1"]
             
-            update_wallet(user_id, reward_sum)
-
+            update_wallet(user_id, reward)
+            
             with get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "INSERT INTO user_achievements (user_id, achievement_key, tier, unlocked_at) VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(user_id, achievement_key) DO UPDATE SET tier = ?, unlocked_at = ?",
-                    (user_id, ach_key, target_tier, today, target_tier, today)
+                    "INSERT INTO user_achievements (user_id, achievement_key, tier, unlocked_at) VALUES (?, ?, ?, ?)",
+                    (user_id, ach_key, 1, today)
                 )
                 conn.commit()
-
+            
             unlocked_now.append({
                 "key": ach_key,
                 "title": data["title"],
-                "tier": target_tier,
-                "tier_name": TIERS_NAMES.get(target_tier, "Bronze"),
-                "reward": reward_sum
+                "reward": reward
             })
-
+            
             if bot_client:
                 try:
-                    with get_db_connection() as db_conn:
-                        cur = db_conn.cursor()
-                        cur.execute("SELECT channel_id FROM ai_channels WHERE ai_type = ?", ("achievements",))
-                        ch_row = cur.fetchone()
-                        if ch_row:
-                            target_channel = bot_client.get_channel(ch_row[0])
-                            if target_channel:
-                                user_obj = bot_client.get_user(user_id)
-                                user_mention = user_obj.mention if user_obj else f"<@{user_id}>"
-                                
-                                member_obj = target_channel.guild.get_member(user_id) if target_channel.guild else None
-                                if member_obj:
-                                    with get_db_connection() as db_conn2:
-                                        cur2 = db_conn2.cursor()
-                                        cur2.execute("SELECT achievement_key, tier FROM user_achievements WHERE user_id = ?", (user_id,))
-                                        all_unlocked = {row[0]: row[1] for row in cur2.fetchall()}
-                                    
-                                    img_buf = await generate_mee6_profile_card(member_obj, all_unlocked)
-                                    file = discord.File(fp=img_buf, filename="achievement.png")
-                                    content = f"GG {user_mention}, tu as débloqué le succès **{data['title']}** ! 🎉"
-                                    bot.loop.create_task(target_channel.send(content=content, file=file))
+                    channel = bot_client.get_channel(PUBLIC_LOG_CHANNEL_ID)
+                    if channel:
+                        user = bot_client.get_user(user_id)
+                        mention = user.mention if user else f"<@{user_id}>"
+                        await channel.send(f"🎉 {mention} a débloqué le succès **{data['title']}** ! (+{format_currency(reward)})")
                 except Exception as e:
-                    print(f"❌ Erreur notification succès : {e}")
-
+                    print(f"❌ Erreur notification: {e}")
+    
     return unlocked_now
 
 
-@bot.tree.command(name="reload-achievements", description="[ADMIN] Recharge la liste des succès depuis GitHub")
-@app_commands.checks.has_permissions(administrator=True)
-async def reload_achievements(interaction: discord.Interaction):
+# ==========================================
+# 3.8. COMMANDES D'ACHIEVEMENTS
+# ==========================================
+
+@bot.tree.command(name="achievements", description="Affiche tes succès et trophées")
+async def achievements(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    success = await load_achievements_from_github()
-    if success:
-        embed = discord.Embed(
-            title="✅ Succès rechargés",
-            description=f"{len(ACHIEVEMENTS_DEFS)} succès chargés depuis GitHub avec succès !",
-            color=discord.Color.green()
-        )
-    else:
-        embed = discord.Embed(
-            title="⚠️ Rechargement partiel",
-            description="Les succès ont été chargés depuis le fallback local.",
-            color=discord.Color.orange()
-        )
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    user_id = interaction.user.id
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT achievement_key, tier FROM user_achievements WHERE user_id = ?", (user_id,))
+        unlocked = {row[0]: row[1] for row in cursor.fetchall()}
+    
+    img_buf = await generate_mee6_profile_card(interaction.user, unlocked)
+    file = discord.File(fp=img_buf, filename="achievements_profile.png")
+    
+    view = AchievementProfileView(interaction.user, unlocked)
+    await interaction.followup.send(file=file, view=view, ephemeral=True)
 
 
 @bot.tree.command(name="achievements-list", description="Affiche la liste complète des succès disponibles")
@@ -1373,7 +1281,7 @@ async def achievements_list(interaction: discord.Interaction):
     for ach_id, data in ACHIEVEMENTS_DEFS.items():
         threshold = data["thresholds"]["1"]
         reward = data["rewards"]["1"]
-        descriptions.append(f"`#{ach_id}` **{data['title']}** - {data['desc']} (Seuil: {threshold}, Récompense: {reward}$)")
+        descriptions.append(f"**{data['title']}** - {data['desc']} (Seuil: {threshold}, Récompense: {reward}$)")
     
     embed.description = "\n".join(descriptions[:20])
     if len(descriptions) > 20:
@@ -1384,9 +1292,29 @@ async def achievements_list(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="check-achievements", description="[ADMIN] Force la vérification des succès pour un joueur")
+@bot.tree.command(name="reload-achievements", description="[ADMIN] Recharge les succès depuis GitHub")
 @app_commands.checks.has_permissions(administrator=True)
-async def check_achievements(interaction: discord.Interaction, membre: discord.Member = None):
+async def reload_achievements(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    success = await load_achievements_from_github()
+    if success:
+        embed = discord.Embed(
+            title="✅ Succès rechargés",
+            description=f"{len(ACHIEVEMENTS_DEFS)} succès chargés depuis GitHub !",
+            color=discord.Color.green()
+        )
+    else:
+        embed = discord.Embed(
+            title="❌ Échec du rechargement",
+            description="Impossible de charger les succès depuis GitHub.",
+            color=discord.Color.red()
+        )
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="force-check", description="[ADMIN] Force la vérification des achievements")
+@app_commands.checks.has_permissions(administrator=True)
+async def force_check(interaction: discord.Interaction, membre: discord.Member = None):
     await interaction.response.defer(ephemeral=True)
     
     target_id = membre.id if membre else interaction.user.id
@@ -1407,11 +1335,29 @@ async def check_achievements(interaction: discord.Interaction, membre: discord.M
     else:
         embed = discord.Embed(
             title="ℹ️ Aucun succès débloqué",
-            description="Le joueur n'a pas atteint les conditions pour débloquer de nouveaux succès.",
+            description="Le joueur n'a pas atteint les conditions.",
             color=discord.Color.blue()
         )
     
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="reset-achievements", description="[ADMIN] Réinitialise les succès d'un joueur")
+@app_commands.checks.has_permissions(administrator=True)
+async def reset_achievements(interaction: discord.Interaction, membre: discord.Member = None):
+    await interaction.response.defer(ephemeral=True)
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        if membre:
+            cursor.execute("DELETE FROM user_achievements WHERE user_id = ?", (membre.id,))
+            msg = f"✅ Succès de {membre.mention} réinitialisés !"
+        else:
+            cursor.execute("DELETE FROM user_achievements")
+            msg = "✅ Succès de tous les joueurs réinitialisés !"
+        conn.commit()
+    
+    await interaction.followup.send(msg, ephemeral=True)
 
 
 @bot.tree.command(name="achievement-data", description="Affiche les données d'achievement d'un joueur")
@@ -1452,23 +1398,6 @@ async def achievement_data(interaction: discord.Interaction, membre: discord.Mem
     embed.set_footer(text=f"Dernière mise à jour: {data.get('last_updated', 'Jamais')}")
     
     await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(name="reset-achievements", description="[ADMIN] Réinitialise définitivement les succès d'un joueur ou de tout le monde")
-@app_commands.checks.has_permissions(administrator=True)
-async def reset_achievements(interaction: discord.Interaction, membre: discord.Member = None):
-    await interaction.response.defer(ephemeral=True)
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        if membre:
-            cursor.execute("DELETE FROM user_achievements WHERE user_id = ?", (membre.id,))
-            msg = f"✅ Tous les succès de {membre.mention} ont été effacés définitivement !"
-        else:
-            cursor.execute("DELETE FROM user_achievements")
-            msg = "✅ Les succès de **tous les joueurs** du serveur ont été effacés définitivement !"
-        conn.commit()
-
-    await interaction.followup.send(msg, ephemeral=True)
 
 
 # =============================================================
@@ -1639,12 +1568,10 @@ def get_episode_title(ep_num: int) -> str:
 # ==========================================
 
 def check_cooldown(user_id: int, command_name: str, duration: int) -> int:
-    """Wrapper pour utiliser Redis ou fallback mémoire"""
     return check_cooldown_redis(user_id, command_name, duration)
 
 
 def clear_cooldown(user_id: int, command_name: str = None):
-    """Wrapper pour utiliser Redis ou fallback mémoire"""
     clear_cooldown_redis(user_id, command_name)
 
 
@@ -2414,7 +2341,6 @@ class JimTavernView(ui.View):
 
         invalidate_user_cache(user_id)
 
-        # Tracker les données d'achievement
         track_beer(user_id)
         await check_and_unlock_achievements(user_id, bot_client=bot)
 
