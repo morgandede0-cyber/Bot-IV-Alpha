@@ -880,7 +880,7 @@ def claim_all_daily_quests(user_id: int):
 
 
 # ==========================================
-# 3.3. SYSTÈME DES ACHIEVEMENTS
+# 3.3. SYSTÈME DES ACHIEVEMENTS (VERSION AVEC IDS)
 # ==========================================
 
 TIERS_NAMES = {1: "Bronze"}
@@ -896,12 +896,12 @@ async def load_achievements_from_github():
     global ACHIEVEMENTS_DEFS, ACHIEVEMENTS_LOADED
     
     FALLBACK_ACHIEVEMENTS = {
-        "games_master": {
+        "1": {
+            "key": "games_master",
             "title": "Maître des Jeux",
             "desc": "Gagner des parties dans les jeux de casino.",
             "thresholds": {"1": 1},
             "rewards": {"1": 200},
-            "order": 1,
             "category": "Jeux",
             "tier": "Commun"
         }
@@ -934,6 +934,202 @@ async def load_achievements_from_github():
         return False
 
 
+def evaluate_stat_for_achievement(ach_id: str, user_id: int) -> int:
+    """Évalue la progression d'un joueur pour un achievement par son ID"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT wallet, bank, beers_today, games_played, games_won FROM users WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            return 0
+
+        wallet, bank, beers_today, games_played, games_won = row
+        wallet = wallet or 0
+        bank = bank or 0
+        beers_today = beers_today or 0
+        games_played = games_played or 0
+        games_won = games_won or 0
+        total_money = wallet + bank
+
+        # Helper pour les requêtes SQL
+        def count_claimed_quests():
+            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
+            result = cursor.fetchone()
+            return result[0] if result else 0
+        
+        def count_quest_key(quest_key):
+            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = ? AND claimed = 1", (user_id, quest_key))
+            result = cursor.fetchone()
+            return result[0] if result else 0
+        
+        # Mapping ID -> valeur
+        stats = {
+            # Quêtes (1-5)
+            "1": count_claimed_quests,
+            "2": count_claimed_quests,
+            "3": count_claimed_quests,
+            "4": count_claimed_quests,
+            "5": count_claimed_quests,
+            
+            # Arène (6-10)
+            "6": lambda: games_played,
+            "7": lambda: games_played,
+            "8": lambda: games_won,
+            "9": lambda: games_won,
+            "10": lambda: games_won,
+            
+            # PMU (11-15)
+            "11": lambda: count_quest_key("pmu_win"),
+            "12": lambda: count_quest_key("pmu_win"),
+            "13": lambda: count_quest_key("pmu_win"),
+            "14": lambda: count_quest_key("pmu_win"),
+            "15": lambda: count_quest_key("pmu_win"),
+            
+            # Crime (16-20)
+            "16": lambda: count_quest_key("crime_attempt"),
+            "17": lambda: count_quest_key("crime_attempt"),
+            "18": lambda: count_quest_key("crime_attempt"),
+            "19": lambda: count_quest_key("crime_attempt"),
+            "20": lambda: count_quest_key("crime_attempt"),
+            
+            # Brinks (21-25)
+            "21": lambda: count_quest_key("vault_attempt"),
+            "22": lambda: count_quest_key("vault_attempt"),
+            "23": lambda: count_quest_key("vault_attempt"),
+            "24": lambda: count_quest_key("vault_attempt"),
+            "25": lambda: count_quest_key("vault_attempt"),
+            
+            # Duel (26-30)
+            "26": lambda: count_quest_key("duel_played"),
+            "27": lambda: count_quest_key("duel_played"),
+            "28": lambda: count_quest_key("duel_won"),
+            "29": lambda: count_quest_key("duel_won"),
+            "30": lambda: count_quest_key("duel_won"),
+            
+            # Daily (31-35)
+            "31": count_claimed_quests,
+            "32": count_claimed_quests,
+            "33": count_claimed_quests,
+            "34": count_claimed_quests,
+            "35": count_claimed_quests,
+            
+            # Taverne (36-40)
+            "36": lambda: beers_today,
+            "37": lambda: beers_today,
+            "38": lambda: beers_today,
+            "39": lambda: beers_today,
+            "40": lambda: beers_today,
+            
+            # Banque (41-45)
+            "41": lambda: count_quest_key("bank_deposit"),
+            "42": lambda: count_quest_key("bank_deposit"),
+            "43": lambda: count_quest_key("bank_deposit"),
+            "44": lambda: count_quest_key("bank_deposit"),
+            "45": lambda: count_quest_key("bank_deposit"),
+            
+            # Larcin (46-50)
+            "46": lambda: count_quest_key("crime_attempt"),
+            "47": lambda: count_quest_key("crime_attempt"),
+            "48": lambda: count_quest_key("crime_attempt"),
+            "49": lambda: count_quest_key("crime_attempt"),
+            "50": lambda: count_quest_key("crime_attempt"),
+        }
+        
+        # Retourner la valeur calculée
+        if ach_id in stats:
+            try:
+                result = stats[ach_id]()
+                return result if result else 0
+            except Exception as e:
+                print(f"❌ Erreur évaluation achievement {ach_id}: {e}")
+                return 0
+    
+    return 0
+
+
+async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
+    global ACHIEVEMENTS_DEFS, ACHIEVEMENTS_LOADED
+    
+    if not ACHIEVEMENTS_LOADED:
+        await load_achievements_from_github()
+    
+    today = time.strftime("%Y-%m-%d")
+    unlocked_now = []
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT achievement_key, tier FROM user_achievements WHERE user_id = ?", (user_id,))
+        user_tiers = {row[0]: row[1] for row in cursor.fetchall()}
+
+    # Parcourir tous les achievements par ID
+    for ach_id, data in ACHIEVEMENTS_DEFS.items():
+        # Récupérer la clé unique depuis le JSON
+        ach_key = data.get("key", ach_id)
+        
+        # Si déjà débloqué, passer
+        if ach_key in user_tiers:
+            continue
+
+        # Évaluer la progression
+        current_stat = evaluate_stat_for_achievement(ach_id, user_id)
+        
+        # Vérifier si le seuil est atteint
+        if current_stat >= data["thresholds"]["1"]:
+            target_tier = 1
+            reward_sum = data["rewards"]["1"]
+            
+            # Donner la récompense
+            update_wallet(user_id, reward_sum)
+
+            # Enregistrer dans la base
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO user_achievements (user_id, achievement_key, tier, unlocked_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(user_id, achievement_key) DO UPDATE SET tier = ?, unlocked_at = ?",
+                    (user_id, ach_key, target_tier, today, target_tier, today)
+                )
+                conn.commit()
+
+            unlocked_now.append({
+                "key": ach_key,
+                "title": data["title"],
+                "tier": target_tier,
+                "tier_name": TIERS_NAMES.get(target_tier, "Bronze"),
+                "reward": reward_sum
+            })
+
+            # Notification dans le salon des achievements
+            if bot_client:
+                try:
+                    with get_db_connection() as db_conn:
+                        cur = db_conn.cursor()
+                        cur.execute("SELECT channel_id FROM ai_channels WHERE ai_type = ?", ("achievements",))
+                        ch_row = cur.fetchone()
+                        if ch_row:
+                            target_channel = bot_client.get_channel(ch_row[0])
+                            if target_channel:
+                                user_obj = bot_client.get_user(user_id)
+                                user_mention = user_obj.mention if user_obj else f"<@{user_id}>"
+                                
+                                member_obj = target_channel.guild.get_member(user_id) if target_channel.guild else None
+                                if member_obj:
+                                    with get_db_connection() as db_conn2:
+                                        cur2 = db_conn2.cursor()
+                                        cur2.execute("SELECT achievement_key, tier FROM user_achievements WHERE user_id = ?", (user_id,))
+                                        all_unlocked = {row[0]: row[1] for row in cur2.fetchall()}
+                                    
+                                    img_buf = await generate_mee6_profile_card(member_obj, all_unlocked)
+                                    file = discord.File(fp=img_buf, filename="achievement.png")
+                                    content = f"GG {user_mention}, tu as débloqué le succès **{data['title']}** ! 🎉"
+                                    bot.loop.create_task(target_channel.send(content=content, file=file))
+                except Exception as e:
+                    print(f"❌ Erreur notification succès : {e}")
+
+    return unlocked_now
+
+
 @bot.tree.command(name="reload-achievements", description="[ADMIN] Recharge la liste des succès depuis GitHub")
 @app_commands.checks.has_permissions(administrator=True)
 async def reload_achievements(interaction: discord.Interaction):
@@ -951,6 +1147,37 @@ async def reload_achievements(interaction: discord.Interaction):
             description="Les succès ont été chargés depuis le fallback local.",
             color=discord.Color.orange()
         )
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="achievements-list", description="Affiche la liste complète des succès disponibles")
+async def achievements_list(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    
+    if not ACHIEVEMENTS_LOADED:
+        await load_achievements_from_github()
+    
+    if not ACHIEVEMENTS_DEFS:
+        return await interaction.followup.send("❌ Aucun succès chargé.", ephemeral=True)
+    
+    embed = discord.Embed(
+        title="🏆 Liste des Succès Disponibles",
+        color=discord.Color.gold()
+    )
+    
+    descriptions = []
+    for ach_id, data in ACHIEVEMENTS_DEFS.items():
+        threshold = data["thresholds"]["1"]
+        reward = data["rewards"]["1"]
+        descriptions.append(f"`#{ach_id}` **{data['title']}** - {data['desc']} (Seuil: {threshold}, Récompense: {reward}$)")
+    
+    # Limiter à 20 pour éviter la limite Discord
+    embed.description = "\n".join(descriptions[:20])
+    if len(descriptions) > 20:
+        embed.set_footer(text=f"Total: {len(ACHIEVEMENTS_DEFS)} succès • 20 affichés")
+    else:
+        embed.set_footer(text=f"Total: {len(ACHIEVEMENTS_DEFS)} succès")
+    
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -1109,144 +1336,6 @@ class AchievementProfileView(ui.View):
     def __init__(self, member: discord.Member, unlocked_achievements: dict):
         super().__init__(timeout=60)
         self.add_item(ui.Button(label="Liste des succès", style=discord.ButtonStyle.link, url="https://listeachievementiv.netlify.app/", emoji="📜"))
-
-
-def evaluate_stat_for_achievement(key: str, user_id: int) -> int:
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT wallet, bank, beers_today, games_played, games_won FROM users WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-
-        if not row:
-            return 0
-
-        wallet, bank, beers_today, games_played, games_won = row
-        wallet = wallet or 0
-        bank = bank or 0
-        beers_today = beers_today or 0
-        games_played = games_played or 0
-        games_won = games_won or 0
-        total_money = wallet + bank
-
-        if key.startswith("quest_"):
-            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
-            q_row = cursor.fetchone()
-            return q_row[0] if q_row else 0
-        elif key.startswith("arena_"):
-            if "essai" in key or "assidu" in key:
-                return games_played
-            elif "guerrier" in key or "champion" in key or "terreur" in key:
-                return games_won
-        elif key.startswith("pmu_"):
-            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'pmu_bet' AND claimed = 1", (user_id,))
-            return cursor.fetchone()[0] if cursor.fetchone() else 0
-        elif key.startswith("crime_"):
-            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'crime_attempt' AND claimed = 1", (user_id,))
-            return cursor.fetchone()[0] if cursor.fetchone() else 0
-        elif key.startswith("vault_"):
-            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'vault_attempt' AND claimed = 1", (user_id,))
-            return cursor.fetchone()[0] if cursor.fetchone() else 0
-        elif key.startswith("duel_"):
-            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'duel_played' AND claimed = 1", (user_id,))
-            return cursor.fetchone()[0] if cursor.fetchone() else 0
-        elif key.startswith("daily_"):
-            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
-            return cursor.fetchone()[0] if cursor.fetchone() else 0
-        elif key.startswith("taverne_"):
-            return beers_today
-        elif key.startswith("bank_"):
-            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'bank_deposit' AND claimed = 1", (user_id,))
-            return cursor.fetchone()[0] if cursor.fetchone() else 0
-        elif key.startswith("larcin_"):
-            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = 'crime_attempt' AND claimed = 1", (user_id,))
-            return cursor.fetchone()[0] if cursor.fetchone() else 0
-        elif key == "games_master":
-            return games_won
-        elif key == "wealth_tycoon":
-            return total_money
-        elif key == "tavern_guest":
-            return beers_today
-        elif key == "arena_gladiator":
-            return games_played
-        elif key == "criminal_mind":
-            return games_played
-        elif key == "quest_seeker":
-            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
-            q_row = cursor.fetchone()
-            return q_row[0] if q_row else 0
-    
-    return 0
-
-
-async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
-    global ACHIEVEMENTS_DEFS, ACHIEVEMENTS_LOADED
-    
-    if not ACHIEVEMENTS_LOADED:
-        await load_achievements_from_github()
-    
-    today = time.strftime("%Y-%m-%d")
-    unlocked_now = []
-
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT achievement_key, tier FROM user_achievements WHERE user_id = ?", (user_id,))
-        user_tiers = {row[0]: row[1] for row in cursor.fetchall()}
-
-    for key, data in ACHIEVEMENTS_DEFS.items():
-        if key in user_tiers:
-            continue
-
-        current_stat = evaluate_stat_for_achievement(key, user_id)
-        
-        if current_stat >= data["thresholds"]["1"]:
-            target_tier = 1
-            reward_sum = data["rewards"]["1"]
-            update_wallet(user_id, reward_sum)
-
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "INSERT INTO user_achievements (user_id, achievement_key, tier, unlocked_at) VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(user_id, achievement_key) DO UPDATE SET tier = ?, unlocked_at = ?",
-                    (user_id, key, target_tier, today, target_tier, today)
-                )
-                conn.commit()
-
-            unlocked_now.append({
-                "key": key,
-                "title": data["title"],
-                "tier": target_tier,
-                "tier_name": TIERS_NAMES.get(target_tier, "Bronze"),
-                "reward": reward_sum
-            })
-
-            if bot_client:
-                try:
-                    with get_db_connection() as db_conn:
-                        cur = db_conn.cursor()
-                        cur.execute("SELECT channel_id FROM ai_channels WHERE ai_type = ?", ("achievements",))
-                        ch_row = cur.fetchone()
-                        if ch_row:
-                            target_channel = bot_client.get_channel(ch_row[0])
-                            if target_channel:
-                                user_obj = bot_client.get_user(user_id)
-                                user_mention = user_obj.mention if user_obj else f"<@{user_id}>"
-                                
-                                member_obj = target_channel.guild.get_member(user_id) if target_channel.guild else None
-                                if member_obj:
-                                    with get_db_connection() as db_conn2:
-                                        cur2 = db_conn2.cursor()
-                                        cur2.execute("SELECT achievement_key, tier FROM user_achievements WHERE user_id = ?", (user_id,))
-                                        all_unlocked = {row[0]: row[1] for row in cur2.fetchall()}
-                                    
-                                    img_buf = await generate_mee6_profile_card(member_obj, all_unlocked)
-                                    file = discord.File(fp=img_buf, filename="achievement.png")
-                                    content = f"GG {user_mention}, tu as débloqué le succès **{data['title']}** ! 🎉"
-                                    bot.loop.create_task(target_channel.send(content=content, file=file))
-                except Exception as e:
-                    print(f"❌ Erreur notification succès : {e}")
-
-    return unlocked_now
 
 
 def get_episode_title(ep_num: int) -> str:
