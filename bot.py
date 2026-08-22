@@ -4223,7 +4223,7 @@ for card in hand:
                 score += 11
             else:
                 score += int(r)
-        while score > 21 and aces:
+while score > 21 and aces:
             score -= 10
             aces -= 1
         return score
