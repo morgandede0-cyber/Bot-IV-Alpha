@@ -39,10 +39,9 @@ TEST_MODE_ENABLED = False
 # SALON DE LOGS PUBLIC (SALON B)
 # ==========================================
 
-PUBLIC_LOG_CHANNEL_ID = 1540068629389910087  # Salon "taverne"
+PUBLIC_LOG_CHANNEL_ID = 1540068629389910087
 
 async def send_public_log(content: str = None, embed: discord.Embed = None, file: discord.File = None, view: ui.View = None):
-    """Envoie un message public dans le Salon B sans séparateurs."""
     if PUBLIC_LOG_CHANNEL_ID:
         channel = bot.get_channel(PUBLIC_LOG_CHANNEL_ID)
         if channel:
@@ -84,7 +83,7 @@ class AnimatedMessageManager:
 
 
 # ==========================================
-# 3. GESTION DE LA BASE DE DONNÉES (SQLite Local)
+# 3. GESTION DE LA BASE DE DONNÉES
 # ==========================================
 
 def get_db_connection():
@@ -153,7 +152,7 @@ def init_db():
             )
         """)
         
-        # Ancienne table des quêtes (gardée pour compatibilité)
+        # Ancienne table des quêtes
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS daily_quests (
                 user_id INTEGER,
@@ -175,6 +174,16 @@ def init_db():
                 tier INTEGER DEFAULT 1,
                 unlocked_at TEXT,
                 PRIMARY KEY (user_id, achievement_key)
+            )
+        """)
+
+        # ========== TABLE DES COMPTEURS POUR ACHIEVEMENTS ==========
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS achievement_stats (
+                user_id INTEGER,
+                stat_key TEXT,
+                stat_value INTEGER DEFAULT 0,
+                PRIMARY KEY (user_id, stat_key)
             )
         """)
 
@@ -309,6 +318,32 @@ def init_db():
         conn.commit()
 
 
+# ==========================================
+# 3.1. FONCTIONS POUR LES COMPTEURS D'ACHIEVEMENTS
+# ==========================================
+
+def increment_achievement_stat(user_id: int, stat_key: str, amount: int = 1):
+    """Incrémente un compteur d'achievement pour un joueur"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO achievement_stats (user_id, stat_key, stat_value)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id, stat_key) DO UPDATE SET
+                stat_value = stat_value + ?
+        """, (user_id, stat_key, amount, amount))
+        conn.commit()
+
+
+def get_achievement_stat(user_id: int, stat_key: str) -> int:
+    """Récupère la valeur d'un compteur d'achievement"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT stat_value FROM achievement_stats WHERE user_id = ? AND stat_key = ?", (user_id, stat_key))
+        row = cursor.fetchone()
+        return row[0] if row else 0
+
+
 def get_user_last_chapter(user_id: int):
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -398,6 +433,7 @@ def update_wallet(user_id: int, amount: int):
     if amount > 0:
         update_quest_progress(user_id, "money_earned", amount)
         update_quest_progress_v2(user_id, "money_earned", amount)
+    asyncio.create_task(check_and_unlock_achievements(user_id, bot))
 
 
 def update_game_stats(user_id: int, won: bool):
@@ -414,6 +450,7 @@ def update_game_stats(user_id: int, won: bool):
     if won:
         update_quest_progress(user_id, "games_won", 1)
         update_quest_progress_v2(user_id, "games_won", 1)
+    asyncio.create_task(check_and_unlock_achievements(user_id, bot))
 
 
 def format_currency(amount: int) -> str:
@@ -424,129 +461,33 @@ init_db()
 
 
 # ==========================================
-# 3.1. SYSTÈME DE QUÊTES PUBLIC (NOUVEAU)
+# 3.2. SYSTÈME DE QUÊTES PUBLIC
 # ==========================================
 
 QUEST_POOL = [
-    {
-        "key": "games_played",
-        "label": "🎲 Joueur Assidu",
-        "desc": "Jouer {target} partie(s) dans un jeu de casino",
-        "target_range": (5, 10),
-    },
-    {
-        "key": "games_won",
-        "label": "🏆 Chanceux du Jour",
-        "desc": "Gagner {target} partie(s) dans n'importe quel jeu",
-        "target_range": (3, 6),
-    },
-    {
-        "key": "work_done",
-        "label": "💼 Travailleur",
-        "desc": "Travailler {target} fois via /work",
-        "target_range": (2, 4),
-    },
-    {
-        "key": "arena_fight",
-        "label": "⚔️ Guerrier de l'Arène",
-        "desc": "Affronter Bob dans l'arène {target} fois",
-        "target_range": (2, 4),
-    },
-    {
-        "key": "beer_drunk",
-        "label": "🍺 Bon Vivant",
-        "desc": "Commander {target} pinte(s) chez Jim",
-        "target_range": (2, 4),
-    },
-    {
-        "key": "pmu_bet",
-        "label": "🐎 Turfiste",
-        "desc": "Parier sur une course chez Brook {target} fois",
-        "target_range": (2, 4),
-    },
-    {
-        "key": "vault_attempt",
-        "label": "🔐 Braqueur de Coffre",
-        "desc": "Tenter de braquer la Brinks {target} fois",
-        "target_range": (1, 3),
-    },
-    {
-        "key": "crime_attempt",
-        "label": "🥷 Petite Frappe",
-        "desc": "Tenter un crime chez John {target} fois",
-        "target_range": (2, 4),
-    },
-    {
-        "key": "money_earned",
-        "label": "💰 Homme d'Affaires",
-        "desc": "Gagner un total de {target} $",
-        "target_range": (1000, 3000),
-    },
-    {
-        "key": "bank_deposit",
-        "label": "🏦 Épargnant",
-        "desc": "Déposer à la banque {target} fois",
-        "target_range": (2, 4),
-    },
-    {
-        "key": "pay_sent",
-        "label": "💸 Généreux",
-        "desc": "Envoyer de l'argent via /pay {target} fois",
-        "target_range": (1, 3),
-    },
-    {
-        "key": "blackjack_win",
-        "label": "👑 Roi du Blackjack",
-        "desc": "Gagner {target} partie(s) de Blackjack",
-        "target_range": (1, 3),
-    },
-    {
-        "key": "slots_win",
-        "label": "🪙 Maître des Slots",
-        "desc": "Gagner {target} partie(s) aux Slots",
-        "target_range": (1, 3),
-    },
-    {
-        "key": "roulette_win",
-        "label": "🎡 Prince de la Roulette",
-        "desc": "Gagner {target} partie(s) à la Roulette",
-        "target_range": (1, 3),
-    },
-    {
-        "key": "pfc_win",
-        "label": "✂️ Maître du PFC",
-        "desc": "Gagner {target} partie(s) au PFC",
-        "target_range": (1, 3),
-    },
-    {
-        "key": "poker_win",
-        "label": "⚜️ Noble du Poker",
-        "desc": "Gagner {target} partie(s) au Poker",
-        "target_range": (1, 3),
-    },
-    {
-        "key": "russian_roulette_survive",
-        "label": "🔫 Survivant",
-        "desc": "Survivre à {target} tir(s) de Roulette Russe",
-        "target_range": (1, 3),
-    },
-    {
-        "key": "dice_win",
-        "label": "🎲 Maître des Dés",
-        "desc": "Gagner {target} partie(s) aux Dés",
-        "target_range": (1, 3),
-    },
-    {
-        "key": "duel_won",
-        "label": "⚔️ Vainqueur de Duel",
-        "desc": "Gagner {target} duel(s) en PvP",
-        "target_range": (1, 2),
-    },
+    {"key": "games_played", "label": "🎲 Joueur Assidu", "desc": "Jouer {target} partie(s) dans un jeu de casino", "target_range": (5, 10)},
+    {"key": "games_won", "label": "🏆 Chanceux du Jour", "desc": "Gagner {target} partie(s) dans n'importe quel jeu", "target_range": (3, 6)},
+    {"key": "work_done", "label": "💼 Travailleur", "desc": "Travailler {target} fois via /work", "target_range": (2, 4)},
+    {"key": "arena_fight", "label": "⚔️ Guerrier de l'Arène", "desc": "Affronter Bob dans l'arène {target} fois", "target_range": (2, 4)},
+    {"key": "beer_drunk", "label": "🍺 Bon Vivant", "desc": "Commander {target} pinte(s) chez Jim", "target_range": (2, 4)},
+    {"key": "pmu_bet", "label": "🐎 Turfiste", "desc": "Parier sur une course chez Brook {target} fois", "target_range": (2, 4)},
+    {"key": "vault_attempt", "label": "🔐 Braqueur de Coffre", "desc": "Tenter de braquer la Brinks {target} fois", "target_range": (1, 3)},
+    {"key": "crime_attempt", "label": "🥷 Petite Frappe", "desc": "Tenter un crime chez John {target} fois", "target_range": (2, 4)},
+    {"key": "money_earned", "label": "💰 Homme d'Affaires", "desc": "Gagner un total de {target} $", "target_range": (1000, 3000)},
+    {"key": "bank_deposit", "label": "🏦 Épargnant", "desc": "Déposer à la banque {target} fois", "target_range": (2, 4)},
+    {"key": "pay_sent", "label": "💸 Généreux", "desc": "Envoyer de l'argent via /pay {target} fois", "target_range": (1, 3)},
+    {"key": "blackjack_win", "label": "👑 Roi du Blackjack", "desc": "Gagner {target} partie(s) de Blackjack", "target_range": (1, 3)},
+    {"key": "slots_win", "label": "🪙 Maître des Slots", "desc": "Gagner {target} partie(s) aux Slots", "target_range": (1, 3)},
+    {"key": "roulette_win", "label": "🎡 Prince de la Roulette", "desc": "Gagner {target} partie(s) à la Roulette", "target_range": (1, 3)},
+    {"key": "pfc_win", "label": "✂️ Maître du PFC", "desc": "Gagner {target} partie(s) au PFC", "target_range": (1, 3)},
+    {"key": "poker_win", "label": "⚜️ Noble du Poker", "desc": "Gagner {target} partie(s) au Poker", "target_range": (1, 3)},
+    {"key": "russian_roulette_survive", "label": "🔫 Survivant", "desc": "Survivre à {target} tir(s) de Roulette Russe", "target_range": (1, 3)},
+    {"key": "dice_win", "label": "🎲 Maître des Dés", "desc": "Gagner {target} partie(s) aux Dés", "target_range": (1, 3)},
+    {"key": "duel_won", "label": "⚔️ Vainqueur de Duel", "desc": "Gagner {target} duel(s) en PvP", "target_range": (1, 2)},
 ]
 
 
 def generate_public_quests():
-    """Génère 8 quêtes aléatoires pour la journée"""
     chosen = random.sample(QUEST_POOL, k=min(8, len(QUEST_POOL)))
     quests = []
     for q in chosen:
@@ -561,7 +502,6 @@ def generate_public_quests():
 
 
 def get_public_quests():
-    """Récupère ou génère les quêtes du jour"""
     today = _today_str()
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -585,7 +525,6 @@ def get_public_quests():
 
 
 def get_player_quests(user_id: int):
-    """Récupère la progression d'un joueur pour les quêtes du jour"""
     today = _today_str()
     public_quests = get_public_quests()
     
@@ -626,7 +565,6 @@ def get_player_quests(user_id: int):
 
 
 def update_player_quest_progress(user_id: int, quest_key: str, amount: int = 1):
-    """Met à jour la progression d'un joueur pour une quête spécifique"""
     if amount <= 0:
         return
     
@@ -672,7 +610,6 @@ def update_player_quest_progress(user_id: int, quest_key: str, amount: int = 1):
 
 
 def claim_all_public_quests(user_id: int):
-    """Réclame la récompense si toutes les quêtes sont complétées"""
     today = _today_str()
     player_quests = get_player_quests(user_id)
     
@@ -700,7 +637,8 @@ def claim_all_public_quests(user_id: int):
     
     update_wallet(user_id, total_reward)
     
-    # Vérifier les achievements
+    # Incrémenter le compteur de quêtes réclamées
+    increment_achievement_stat(user_id, "quests_claimed", 1)
     asyncio.create_task(check_and_unlock_achievements(user_id, bot))
     
     return {
@@ -710,7 +648,6 @@ def claim_all_public_quests(user_id: int):
 
 
 def update_quest_progress_v2(user_id: int, quest_key: str, amount: int = 1):
-    """Version pour le nouveau système de quêtes"""
     if amount <= 0:
         return
     update_player_quest_progress(user_id, quest_key, amount)
@@ -721,7 +658,7 @@ def _today_str() -> str:
 
 
 # ==========================================
-# 3.2. ANCIEN SYSTÈME DE QUÊTES (gardé pour compatibilité)
+# 3.3. ANCIEN SYSTÈME DE QUÊTES
 # ==========================================
 
 QUEST_STREAK_MULT_STEP = 0.15
@@ -874,7 +811,8 @@ def claim_all_daily_quests(user_id: int):
 
     update_wallet(user_id, total_reward)
     
-    # Vérifier les achievements
+    # Incrémenter le compteur de quêtes réclamées
+    increment_achievement_stat(user_id, "quests_claimed", 1)
     asyncio.create_task(check_and_unlock_achievements(user_id, bot))
 
     return {
@@ -886,7 +824,7 @@ def claim_all_daily_quests(user_id: int):
 
 
 # ==========================================
-# 3.3. SYSTÈME DES ACHIEVEMENTS (VERSION AVEC IDS)
+# 3.4. SYSTÈME DES ACHIEVEMENTS
 # ==========================================
 
 TIERS_NAMES = {1: "Bronze"}
@@ -944,65 +882,58 @@ def evaluate_stat_for_achievement(ach_id: str, user_id: int) -> int:
     """Évalue la progression d'un joueur pour un achievement par son ID"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT wallet, bank, beers_today, games_played, games_won FROM users WHERE user_id = ?", (user_id,))
+        cursor.execute("SELECT beers_today, games_played, games_won FROM users WHERE user_id = ?", (user_id,))
         row = cursor.fetchone()
 
         if not row:
             return 0
 
-        wallet, bank, beers_today, games_played, games_won = row
-        wallet = wallet or 0
-        bank = bank or 0
+        beers_today, games_played, games_won = row
         beers_today = beers_today or 0
         games_played = games_played or 0
         games_won = games_won or 0
 
-        # Helper pour les requêtes SQL
-        def count_claimed_quests():
-            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
-            result = cursor.fetchone()
-            return result[0] if result else 0
-        
-        def count_quest_key(quest_key):
-            cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND quest_key = ? AND claimed = 1", (user_id, quest_key))
-            result = cursor.fetchone()
-            return result[0] if result else 0
+        # Helper pour les stats d'achievements
+        def get_stat(stat_key):
+            cursor.execute("SELECT stat_value FROM achievement_stats WHERE user_id = ? AND stat_key = ?", (user_id, stat_key))
+            r = cursor.fetchone()
+            return r[0] if r else 0
         
         # =============================================
-        # MAPPING COMPLET DES IDS 1 À 50
+        # MAPPING DES IDS 1 À 50
         # =============================================
         
-        # Quêtes (1-5) - toutes utilisent count_claimed_quests
+        # Quêtes (1-5)
         if ach_id in ["1", "2", "3", "4", "5"]:
-            return count_claimed_quests()
+            return get_stat("quests_claimed")
         
         # Arène (6-10)
-        if ach_id in ["6", "7"]:  # arena_essai, arena_assidu
+        if ach_id in ["6", "7"]:
             return games_played
-        if ach_id in ["8", "9", "10"]:  # arena_guerrier, arena_champion, arena_terreur
+        if ach_id in ["8", "9", "10"]:
             return games_won
         
         # PMU (11-15)
         if ach_id in ["11", "12", "13", "14", "15"]:
-            return count_quest_key("pmu_win")
+            return get_stat("pmu_wins")
         
         # Crime (16-20)
         if ach_id in ["16", "17", "18", "19", "20"]:
-            return count_quest_key("crime_attempt")
+            return get_stat("crimes_success")
         
         # Brinks (21-25)
         if ach_id in ["21", "22", "23", "24", "25"]:
-            return count_quest_key("vault_attempt")
+            return get_stat("vault_attempts")
         
         # Duel (26-30)
-        if ach_id in ["26", "27"]:  # duel_premier, duel_bretteur
-            return count_quest_key("duel_played")
-        if ach_id in ["28", "29", "30"]:  # duel_collectionneur, duel_invaincu, duel_dieu
-            return count_quest_key("duel_won")
+        if ach_id in ["26", "27"]:
+            return get_stat("duels_played")
+        if ach_id in ["28", "29", "30"]:
+            return get_stat("duels_won")
         
         # Daily (31-35)
         if ach_id in ["31", "32", "33", "34", "35"]:
-            return count_claimed_quests()
+            return get_stat("quests_claimed")
         
         # Taverne (36-40)
         if ach_id in ["36", "37", "38", "39", "40"]:
@@ -1010,11 +941,11 @@ def evaluate_stat_for_achievement(ach_id: str, user_id: int) -> int:
         
         # Banque (41-45)
         if ach_id in ["41", "42", "43", "44", "45"]:
-            return count_quest_key("bank_deposit")
+            return get_stat("bank_deposits")
         
         # Larcin (46-50)
         if ach_id in ["46", "47", "48", "49", "50"]:
-            return count_quest_key("crime_attempt")
+            return get_stat("larcins_success")
     
     return 0
 
@@ -1025,9 +956,7 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
     if not ACHIEVEMENTS_LOADED:
         await load_achievements_from_github()
     
-    # Si pas de succès chargés, on sort
     if not ACHIEVEMENTS_DEFS:
-        print("⚠️ Aucun succès chargé, impossible de vérifier les déblocages")
         return []
     
     today = time.strftime("%Y-%m-%d")
@@ -1038,31 +967,20 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
         cursor.execute("SELECT achievement_key, tier FROM user_achievements WHERE user_id = ?", (user_id,))
         user_tiers = {row[0]: row[1] for row in cursor.fetchall()}
 
-    # Parcourir tous les achievements par ID
     for ach_id, data in ACHIEVEMENTS_DEFS.items():
-        # Récupérer la clé unique depuis le JSON
         ach_key = data.get("key", ach_id)
         
-        # Si déjà débloqué, passer
         if ach_key in user_tiers:
             continue
 
-        # Évaluer la progression
         current_stat = evaluate_stat_for_achievement(ach_id, user_id)
         
-        print(f"🔍 Achievement {ach_id} ({data['title']}) : {current_stat}/{data['thresholds']['1']}")
-        
-        # Vérifier si le seuil est atteint
         if current_stat >= data["thresholds"]["1"]:
             target_tier = 1
             reward_sum = data["rewards"]["1"]
             
-            print(f"✅ Débloqué ! {data['title']} pour {user_id}")
-            
-            # Donner la récompense
             update_wallet(user_id, reward_sum)
 
-            # Enregistrer dans la base
             with get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
@@ -1080,7 +998,6 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
                 "reward": reward_sum
             })
 
-            # Notification dans le salon des achievements
             if bot_client:
                 try:
                     with get_db_connection() as db_conn:
@@ -1151,7 +1068,6 @@ async def achievements_list(interaction: discord.Interaction):
         reward = data["rewards"]["1"]
         descriptions.append(f"`#{ach_id}` **{data['title']}** - {data['desc']} (Seuil: {threshold}, Récompense: {reward}$)")
     
-    # Limiter à 20 pour éviter la limite Discord
     embed.description = "\n".join(descriptions[:20])
     if len(descriptions) > 20:
         embed.set_footer(text=f"Total: {len(ACHIEVEMENTS_DEFS)} succès • 20 affichés")
@@ -1188,6 +1104,62 @@ async def check_achievements(interaction: discord.Interaction, membre: discord.M
             color=discord.Color.blue()
         )
     
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="debug-achievements", description="[ADMIN] Affiche les stats brutes pour debug")
+@app_commands.checks.has_permissions(administrator=True)
+async def debug_achievements(interaction: discord.Interaction, membre: discord.Member):
+    await interaction.response.defer(ephemeral=True)
+    user_id = membre.id
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT beers_today, games_played, games_won FROM users WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        
+        cursor.execute("SELECT stat_key, stat_value FROM achievement_stats WHERE user_id = ?", (user_id,))
+        stats = cursor.fetchall()
+        
+        cursor.execute("SELECT COUNT(*) FROM player_quests WHERE user_id = ? AND claimed = 1", (user_id,))
+        player_claimed = cursor.fetchone()[0] if cursor.fetchone() else 0
+    
+    embed = discord.Embed(
+        title=f"🔍 Debug Achievements - {membre.display_name}",
+        color=discord.Color.blue()
+    )
+    
+    if row:
+        embed.add_field(
+            name="📊 Stats utilisateur",
+            value=f"Bières: {row[0]}\nParties jouées: {row[1]}\nParties gagnées: {row[2]}",
+            inline=False
+        )
+    
+    embed.add_field(
+        name="📋 Quêtes réclamées (player_quests)",
+        value=f"{player_claimed}",
+        inline=False
+    )
+    
+    if stats:
+        stat_lines = []
+        for key, value in stats:
+            stat_lines.append(f"**{key}**: {value}")
+        embed.add_field(
+            name="📊 Compteurs d'achievements",
+            value="\n".join(stat_lines),
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="📊 Compteurs d'achievements",
+            value="Aucun compteur pour le moment",
+            inline=False
+        )
+    
+    embed.set_footer(text=f"ID: {user_id}")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -1471,7 +1443,7 @@ class PublicQuestsView(ui.View):
 
 
 # ==========================================
-# 6. MODALES DE MISE POUR CHAQUE JEU
+# 6. MODALES DE MISE
 # ==========================================
 
 class BetModal(ui.Modal):
@@ -1603,6 +1575,8 @@ class DuelPFCView(ui.View):
                 update_game_stats(self.challenger.id, won=True)
                 update_game_stats(self.opponent.id, won=False)
                 update_quest_progress_v2(self.challenger.id, "duel_won", 1)
+                increment_achievement_stat(self.challenger.id, "duels_played", 1)
+                increment_achievement_stat(self.challenger.id, "duels_won", 1)
                 await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.challenger.mention} !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
@@ -1614,6 +1588,8 @@ class DuelPFCView(ui.View):
                 update_game_stats(self.opponent.id, won=True)
                 update_game_stats(self.challenger.id, won=False)
                 update_quest_progress_v2(self.opponent.id, "duel_won", 1)
+                increment_achievement_stat(self.opponent.id, "duels_played", 1)
+                increment_achievement_stat(self.opponent.id, "duels_won", 1)
                 await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.opponent.mention} !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
@@ -1683,6 +1659,8 @@ class DuelDiceView(ui.View):
                 update_game_stats(self.challenger.id, won=True)
                 update_game_stats(self.opponent.id, won=False)
                 update_quest_progress_v2(self.challenger.id, "duel_won", 1)
+                increment_achievement_stat(self.challenger.id, "duels_played", 1)
+                increment_achievement_stat(self.challenger.id, "duels_won", 1)
                 await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.challenger.mention} ({c_score} vs {o_score}) !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
@@ -1694,6 +1672,8 @@ class DuelDiceView(ui.View):
                 update_game_stats(self.opponent.id, won=True)
                 update_game_stats(self.challenger.id, won=False)
                 update_quest_progress_v2(self.opponent.id, "duel_won", 1)
+                increment_achievement_stat(self.opponent.id, "duels_played", 1)
+                increment_achievement_stat(self.opponent.id, "duels_won", 1)
                 await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.opponent.mention} ({o_score} vs {c_score}) !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
@@ -1858,6 +1838,7 @@ class DepositModal(ui.Modal, title="📥 DAB - Dépôt de billets"):
 
             update_quest_progress(interaction.user.id, "bank_deposit", 1)
             update_quest_progress_v2(interaction.user.id, "bank_deposit", 1)
+            increment_achievement_stat(interaction.user.id, "bank_deposits", 1)
             await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
 
             await send_public_log(
@@ -2127,6 +2108,16 @@ class JimTavernView(ui.View):
         update_quest_progress(user_id, "beer_drunk", 1)
         update_quest_progress_v2(user_id, "beer_drunk", 1)
 
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE users SET beers_today = ?, last_beer_date = ? WHERE user_id = ?",
+                (beers_today, last_beer_date, user_id)
+            )
+            conn.commit()
+
+        await check_and_unlock_achievements(user_id, bot_client=bot)
+
         events = [
             ("gain", 200, f"🍻 Tu as passé une excellente soirée et gagné à un jeu de dés clandestin ! +**{format_currency(200)}**"),
             ("gain", 100, f"🍻 Tu as bu un coup avec des marchands, ils t'ont offert des babioles revendues. +**{format_currency(100)}**"),
@@ -2143,16 +2134,6 @@ class JimTavernView(ui.View):
             actual_loss = min(amount, current_wallet)
             if actual_loss > 0:
                 update_wallet(user_id, -actual_loss)
-
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE users SET beers_today = ?, last_beer_date = ? WHERE user_id = ?",
-                (beers_today, last_beer_date, user_id)
-            )
-            conn.commit()
-
-        await check_and_unlock_achievements(user_id, bot_client=bot)
 
         await send_public_log(
             content=f"🍺 **{interaction.user.display_name}** a commandé une pinte chez Jim ! (#{beers_today}/5) {outcome}"
@@ -2222,6 +2203,7 @@ class JohnRobSelect(ui.UserSelect):
             stolen = random.randint(50, int(victim_wallet * 0.7))
             update_wallet(victim.id, -stolen)
             update_wallet(user_id, stolen)
+            increment_achievement_stat(user_id, "larcins_success", 1)
             await check_and_unlock_achievements(user_id, bot_client=bot)
             
             await send_public_log(
@@ -2293,6 +2275,7 @@ class BrinksVaultModal(ui.Modal, title="🔒 Coffre de la Brinks - Code à 4 chi
 
         if user_input == self.secret_code:
             update_wallet(user_id, self.prize)
+            increment_achievement_stat(user_id, "vault_attempts", 1)
             await check_and_unlock_achievements(user_id, bot_client=bot)
             
             await send_public_log(
@@ -2387,6 +2370,7 @@ class JohnCrimeView(ui.View):
         if success:
             gain = random.randint(300, 1000)
             update_wallet(user_id, gain)
+            increment_achievement_stat(user_id, "crimes_success", 1)
             await check_and_unlock_achievements(user_id, bot_client=bot)
             
             await send_public_log(
@@ -2724,6 +2708,7 @@ async def run_pmu_game(interaction: discord.Interaction, cheval: int, bet: int):
         update_wallet(interaction.user.id, gain - bet)
         update_game_stats(interaction.user.id, won=True)
         update_quest_progress_v2(interaction.user.id, "pmu_win", 1)
+        increment_achievement_stat(interaction.user.id, "pmu_wins", 1)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         res_msg = f"🏆 **[PMU] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! Ton pari sur **{chevaux[cheval]['nom']}** (cote x{cote}) passe haut la main ! +**{format_currency(gain)}**"
         
@@ -2828,6 +2813,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         update_wallet(interaction.user.id, gain - bet)
         update_game_stats(interaction.user.id, won=True)
         update_quest_progress_v2(interaction.user.id, "pmu_win", 1)
+        increment_achievement_stat(interaction.user.id, "pmu_wins", 1)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         res_msg = f"🏆 **[BROOK LA BOOKMAKEUSE] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! Ton pari sur **{chevaux[horse_choice]['nom']}** (cote x{cote}) passe haut la main ! +**{format_currency(gain)}**"
         
@@ -3772,7 +3758,7 @@ async def toggle_cooldowns(interaction: discord.Interaction):
 
 
 # ==========================================
-# 10. JEUX DE CASINO
+# 10. JEUX DE CASINO - AJOUT DES COMPTEURS
 # ==========================================
 
 class BlackjackGame:
