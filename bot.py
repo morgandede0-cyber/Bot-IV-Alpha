@@ -8,6 +8,7 @@ import sqlite3
 import traceback
 import json
 import aiohttp
+import redis
 import discord
 from discord import app_commands, ui
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -36,12 +37,30 @@ cooldowns = {}
 TEST_MODE_ENABLED = False
 
 # ==========================================
+# REDIS CONNECTION
+# ==========================================
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+REDIS_AVAILABLE = False
+
+try:
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+    redis_client.ping()
+    REDIS_AVAILABLE = True
+    print("✅ Redis connecté avec succès !")
+except Exception as e:
+    print(f"⚠️ Redis non disponible: {e}, utilisation du cache mémoire")
+    redis_client = None
+
+
+# ==========================================
 # SALON DE LOGS PUBLIC (SALON B)
 # ==========================================
 
-PUBLIC_LOG_CHANNEL_ID = 1540068629389910087
+PUBLIC_LOG_CHANNEL_ID = 1540068629389910087  # Salon "taverne"
 
 async def send_public_log(content: str = None, embed: discord.Embed = None, file: discord.File = None, view: ui.View = None):
+    """Envoie un message public dans le Salon B sans séparateurs."""
     if PUBLIC_LOG_CHANNEL_ID:
         channel = bot.get_channel(PUBLIC_LOG_CHANNEL_ID)
         if channel:
@@ -83,7 +102,7 @@ class AnimatedMessageManager:
 
 
 # ==========================================
-# 3. GESTION DE LA BASE DE DONNÉES
+# 3. GESTION DE LA BASE DE DONNÉES (SQLite Local)
 # ==========================================
 
 def get_db_connection():
@@ -152,7 +171,7 @@ def init_db():
             )
         """)
         
-        # Ancienne table des quêtes
+        # Ancienne table des quêtes (gardée pour compatibilité)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS daily_quests (
                 user_id INTEGER,
@@ -177,13 +196,40 @@ def init_db():
             )
         """)
 
-        # ========== TABLE DES COMPTEURS POUR ACHIEVEMENTS ==========
+        # ========== NOUVELLE TABLE POUR LES DONNEES D'ACHIEVEMENTS ==========
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS achievement_stats (
-                user_id INTEGER,
-                stat_key TEXT,
-                stat_value INTEGER DEFAULT 0,
-                PRIMARY KEY (user_id, stat_key)
+            CREATE TABLE IF NOT EXISTS achievement_data (
+                user_id INTEGER PRIMARY KEY,
+                games_played INTEGER DEFAULT 0,
+                games_won INTEGER DEFAULT 0,
+                games_lost INTEGER DEFAULT 0,
+                beers_drunk INTEGER DEFAULT 0,
+                crimes_success INTEGER DEFAULT 0,
+                crimes_attempts INTEGER DEFAULT 0,
+                vault_attempts INTEGER DEFAULT 0,
+                vault_success INTEGER DEFAULT 0,
+                pmu_wins INTEGER DEFAULT 0,
+                pmu_bets INTEGER DEFAULT 0,
+                duels_played INTEGER DEFAULT 0,
+                duels_won INTEGER DEFAULT 0,
+                work_done INTEGER DEFAULT 0,
+                bank_deposits INTEGER DEFAULT 0,
+                bank_withdrawals INTEGER DEFAULT 0,
+                pay_sent INTEGER DEFAULT 0,
+                pay_received INTEGER DEFAULT 0,
+                quests_completed INTEGER DEFAULT 0,
+                quests_claimed INTEGER DEFAULT 0,
+                blackjack_wins INTEGER DEFAULT 0,
+                slots_wins INTEGER DEFAULT 0,
+                roulette_wins INTEGER DEFAULT 0,
+                pfc_wins INTEGER DEFAULT 0,
+                poker_wins INTEGER DEFAULT 0,
+                russian_roulette_survive INTEGER DEFAULT 0,
+                dice_wins INTEGER DEFAULT 0,
+                arena_fights INTEGER DEFAULT 0,
+                arena_wins INTEGER DEFAULT 0,
+                larcins_success INTEGER DEFAULT 0,
+                last_updated TEXT DEFAULT ''
             )
         """)
 
@@ -319,78 +365,302 @@ def init_db():
 
 
 # ==========================================
-# 3.1. FONCTIONS POUR LES COMPTEURS D'ACHIEVEMENTS
+# 3.1. SYSTEME DE DONNEES POUR ACHIEVEMENTS
 # ==========================================
 
-def increment_achievement_stat(user_id: int, stat_key: str, amount: int = 1):
-    """Incrémente un compteur d'achievement pour un joueur"""
+def init_achievement_data(user_id: int):
+    """Initialise les données d'achievement pour un joueur"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO achievement_stats (user_id, stat_key, stat_value)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id, stat_key) DO UPDATE SET
-                stat_value = stat_value + ?
-        """, (user_id, stat_key, amount, amount))
+            INSERT OR IGNORE INTO achievement_data (user_id, last_updated)
+            VALUES (?, ?)
+        """, (user_id, datetime.datetime.now().isoformat()))
         conn.commit()
 
-
-def get_achievement_stat(user_id: int, stat_key: str) -> int:
-    """Récupère la valeur d'un compteur d'achievement"""
+def get_achievement_data(user_id: int) -> dict:
+    """Récupère toutes les données d'achievement d'un joueur"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT stat_value FROM achievement_stats WHERE user_id = ? AND stat_key = ?", (user_id, stat_key))
+        cursor.execute("SELECT * FROM achievement_data WHERE user_id = ?", (user_id,))
         row = cursor.fetchone()
-        return row[0] if row else 0
+        
+        if row is None:
+            init_achievement_data(user_id)
+            return get_achievement_data(user_id)
+        
+        columns = [desc[0] for desc in cursor.description]
+        return dict(zip(columns, row))
 
-
-def get_user_last_chapter(user_id: int):
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT last_episode, last_shop_episode FROM user_last_chapter WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        if row:
-            return row[0], row[1]
-        return 1, 1
-
-
-def update_user_last_chapter(user_id: int, last_episode: int = None, last_shop_episode: int = None):
-    current_ep, current_shop = get_user_last_chapter(user_id)
-    if last_episode is None:
-        last_episode = current_ep
-    if last_shop_episode is None:
-        last_shop_episode = current_shop
+def increment_achievement_data(user_id: int, **kwargs):
+    """Incrémente les données d'achievement d'un joueur"""
+    # Filtrer les valeurs positives
+    increments = {k: v for k, v in kwargs.items() if isinstance(v, int) and v > 0}
+    if not increments:
+        return
     
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO user_last_chapter (user_id, last_episode, last_shop_episode)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                last_episode = excluded.last_episode,
-                last_shop_episode = excluded.last_shop_episode
-        """, (user_id, last_episode, last_shop_episode))
+        
+        # S'assurer que l'utilisateur existe
+        cursor.execute("INSERT OR IGNORE INTO achievement_data (user_id) VALUES (?)", (user_id,))
+        
+        # Construire la requête d'incrémentation
+        set_clause = ", ".join([f"{key} = COALESCE({key}, 0) + ?" for key in increments])
+        values = list(increments.values()) + [datetime.datetime.now().isoformat(), user_id]
+        
+        cursor.execute(f"""
+            UPDATE achievement_data 
+            SET {set_clause}, last_updated = ?
+            WHERE user_id = ?
+        """, values)
+        
         conn.commit()
 
-
-def get_user_animation_preference(user_id: int) -> bool:
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT show_animations FROM user_preferences WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        if row is None:
-            cursor.execute("INSERT OR IGNORE INTO user_preferences (user_id, show_animations) VALUES (?, 1)", (user_id,))
-            conn.commit()
-            return True
-        return bool(row[0])
+def get_achievement_value(user_id: int, field: str) -> int:
+    """Récupère une valeur spécifique des données d'achievement"""
+    data = get_achievement_data(user_id)
+    return data.get(field, 0)
 
 
-def set_user_animation_preference(user_id: int, show: bool):
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO user_preferences (user_id, show_animations) VALUES (?, ?)", (user_id, 1 if show else 0))
-        conn.commit()
+# ==========================================
+# 3.2. FONCTIONS DE TRACKING POUR ACHIEVEMENTS
+# ==========================================
 
+def track_game_played(user_id: int, won: bool = False, lost: bool = False):
+    """Track une partie jouée"""
+    increments = {"games_played": 1}
+    if won:
+        increments["games_won"] = 1
+    if lost:
+        increments["games_lost"] = 1
+    increment_achievement_data(user_id, **increments)
+
+def track_beer(user_id: int):
+    """Track une pinte bue"""
+    increment_achievement_data(user_id, beers_drunk=1)
+
+def track_crime(user_id: int, success: bool = False):
+    """Track un crime"""
+    increments = {"crimes_attempts": 1}
+    if success:
+        increments["crimes_success"] = 1
+    increment_achievement_data(user_id, **increments)
+
+def track_vault(user_id: int, success: bool = False):
+    """Track un braquage de la Brinks"""
+    increments = {"vault_attempts": 1}
+    if success:
+        increments["vault_success"] = 1
+    increment_achievement_data(user_id, **increments)
+
+def track_pmu(user_id: int, won: bool = False):
+    """Track un pari PMU"""
+    increments = {"pmu_bets": 1}
+    if won:
+        increments["pmu_wins"] = 1
+    increment_achievement_data(user_id, **increments)
+
+def track_duel(user_id: int, won: bool = False):
+    """Track un duel"""
+    increments = {"duels_played": 1}
+    if won:
+        increments["duels_won"] = 1
+    increment_achievement_data(user_id, **increments)
+
+def track_work(user_id: int):
+    """Track un travail"""
+    increment_achievement_data(user_id, work_done=1)
+
+def track_bank_deposit(user_id: int):
+    """Track un dépôt bancaire"""
+    increment_achievement_data(user_id, bank_deposits=1)
+
+def track_pay_sent(user_id: int):
+    """Track un envoi d'argent"""
+    increment_achievement_data(user_id, pay_sent=1)
+
+def track_quest_claimed(user_id: int):
+    """Track une quête réclamée"""
+    increment_achievement_data(user_id, quests_claimed=1)
+
+def track_game_win(user_id: int, game_type: str):
+    """Track une victoire à un jeu spécifique"""
+    game_mapping = {
+        "blackjack": "blackjack_wins",
+        "slots": "slots_wins",
+        "roulette": "roulette_wins",
+        "pfc": "pfc_wins",
+        "poker": "poker_wins",
+        "russian_roulette": "russian_roulette_survive",
+        "dice": "dice_wins",
+        "arena": "arena_wins",
+    }
+    field = game_mapping.get(game_type)
+    if field:
+        increment_achievement_data(user_id, **{field: 1})
+
+def track_larcin(user_id: int, success: bool = False):
+    """Track un larcin"""
+    if success:
+        increment_achievement_data(user_id, larcins_success=1)
+
+
+# ==========================================
+# 3.3. FONCTIONS REDIS (adaptées)
+# ==========================================
+
+def invalidate_user_cache(user_id: int):
+    """Invalide le cache Redis d'un utilisateur"""
+    if REDIS_AVAILABLE and redis_client:
+        redis_client.delete(f"user:{user_id}")
+        redis_client.delete(f"user:{user_id}:wallet")
+        redis_client.delete(f"user:{user_id}:bank")
+
+def invalidate_leaderboard():
+    """Invalide le classement en cache"""
+    if REDIS_AVAILABLE and redis_client:
+        redis_client.delete("leaderboard:top10")
+
+def get_user_cached(user_id: int):
+    """Récupère un utilisateur avec cache Redis"""
+    if not REDIS_AVAILABLE or not redis_client:
+        return get_user(user_id)
+    
+    cache_key = f"user:{user_id}"
+    cached = redis_client.get(cache_key)
+    
+    if cached:
+        try:
+            data = json.loads(cached)
+            return (
+                data.get("wallet", 0),
+                data.get("bank", 0),
+                data.get("last_daily", 0),
+                data.get("streak", 0),
+                data.get("beers_today", 0),
+                data.get("last_beer_date", ""),
+                data.get("games_played", 0),
+                data.get("games_won", 0),
+                data.get("games_lost", 0)
+            )
+        except:
+            pass
+    
+    # Récupérer depuis SQL
+    data = get_user(user_id)
+    
+    # Mettre en cache (5 minutes)
+    cache_data = {
+        "wallet": data[0],
+        "bank": data[1],
+        "last_daily": data[2],
+        "streak": data[3],
+        "beers_today": data[4],
+        "last_beer_date": data[5],
+        "games_played": data[6],
+        "games_won": data[7],
+        "games_lost": data[8]
+    }
+    if REDIS_AVAILABLE and redis_client:
+        redis_client.setex(cache_key, 300, json.dumps(cache_data))
+    
+    return data
+
+def check_cooldown_redis(user_id: int, command_name: str, duration: int) -> int:
+    """Vérifie un cooldown avec Redis ou fallback mémoire"""
+    if TEST_MODE_ENABLED:
+        return 0
+    
+    if REDIS_AVAILABLE and redis_client:
+        key = f"cooldown:{user_id}:{command_name}"
+        ttl = redis_client.ttl(key)
+        
+        if ttl > 0:
+            return ttl
+        
+        redis_client.setex(key, duration, "1")
+        return 0
+    
+    # Fallback sur l'ancien système
+    now = int(time.time())
+    key = (user_id, command_name)
+    expire = cooldowns.get(key, 0)
+    if now < expire:
+        return expire - now
+    cooldowns[key] = now + duration
+    return 0
+
+def clear_cooldown_redis(user_id: int, command_name: str = None):
+    """Supprime un cooldown Redis"""
+    if REDIS_AVAILABLE and redis_client:
+        if command_name:
+            redis_client.delete(f"cooldown:{user_id}:{command_name}")
+        else:
+            keys = redis_client.keys(f"cooldown:{user_id}:*")
+            if keys:
+                redis_client.delete(*keys)
+    else:
+        # Fallback sur l'ancien système
+        if command_name:
+            cooldowns.pop((user_id, command_name), None)
+        else:
+            keys_to_remove = [k for k in cooldowns if k[0] == user_id]
+            for k in keys_to_remove:
+                cooldowns.pop(k, None)
+
+def update_leaderboard(user_id: int, score: int):
+    """Met à jour le classement des richesses dans Redis"""
+    if REDIS_AVAILABLE and redis_client:
+        redis_client.zadd("leaderboard:richest", {str(user_id): score})
+
+def get_top_10_richest():
+    """Récupère le top 10 des plus riches depuis Redis"""
+    if REDIS_AVAILABLE and redis_client:
+        return redis_client.zrevrange("leaderboard:richest", 0, 9, withscores=True)
+    return None
+
+def get_user_rank(user_id: int):
+    """Récupère le rang d'un utilisateur"""
+    if REDIS_AVAILABLE and redis_client:
+        rank = redis_client.zrevrank("leaderboard:richest", str(user_id))
+        return rank + 1 if rank is not None else None
+    return None
+
+def check_rate_limit(user_id: int, action: str, max_requests: int = 5, window: int = 60) -> bool:
+    """Vérifie le rate limiting avec Redis"""
+    if TEST_MODE_ENABLED:
+        return True
+    
+    if not REDIS_AVAILABLE or not redis_client:
+        return True
+    
+    key = f"rate:{user_id}:{action}"
+    count = redis_client.incr(key)
+    
+    if count == 1:
+        redis_client.expire(key, window)
+    
+    return count <= max_requests
+
+def get_redis_stats():
+    """Récupère les statistiques Redis"""
+    if not REDIS_AVAILABLE or not redis_client:
+        return None
+    
+    try:
+        return {
+            "keys": len(redis_client.keys("*")),
+            "memory": redis_client.info("memory")["used_memory_human"],
+            "uptime": redis_client.info("server")["uptime_in_seconds"]
+        }
+    except:
+        return None
+
+
+# ==========================================
+# 3.4. FONCTIONS UTILITAIRES
+# ==========================================
 
 def get_user(user_id: int):
     with get_db_connection() as conn:
@@ -430,9 +700,19 @@ def update_wallet(user_id: int, amount: int):
             (amount, user_id),
         )
         conn.commit()
+    
+    # Invalider le cache Redis
+    invalidate_user_cache(user_id)
+    
+    # Mettre à jour le leaderboard
+    if REDIS_AVAILABLE and redis_client:
+        wallet, bank, _, _, _, _, _, _, _ = get_user_cached(user_id)
+        update_leaderboard(user_id, wallet + bank)
+    
     if amount > 0:
         update_quest_progress(user_id, "money_earned", amount)
         update_quest_progress_v2(user_id, "money_earned", amount)
+    
     asyncio.create_task(check_and_unlock_achievements(user_id, bot))
 
 
@@ -445,11 +725,19 @@ def update_game_stats(user_id: int, won: bool):
         else:
             cursor.execute("UPDATE users SET games_played = COALESCE(games_played, 0) + 1, games_lost = COALESCE(games_lost, 0) + 1 WHERE user_id = ?", (user_id,))
         conn.commit()
+    
+    # Invalider le cache Redis
+    invalidate_user_cache(user_id)
+    
+    # Tracker les données d'achievement
+    track_game_played(user_id, won=won, lost=not won)
+    
     update_quest_progress(user_id, "games_played", 1)
     update_quest_progress_v2(user_id, "games_played", 1)
     if won:
         update_quest_progress(user_id, "games_won", 1)
         update_quest_progress_v2(user_id, "games_won", 1)
+    
     asyncio.create_task(check_and_unlock_achievements(user_id, bot))
 
 
@@ -461,7 +749,7 @@ init_db()
 
 
 # ==========================================
-# 3.2. SYSTÈME DE QUÊTES PUBLIC
+# 3.5. SYSTÈME DE QUÊTES PUBLIC
 # ==========================================
 
 QUEST_POOL = [
@@ -637,8 +925,8 @@ def claim_all_public_quests(user_id: int):
     
     update_wallet(user_id, total_reward)
     
-    # Incrémenter le compteur de quêtes réclamées
-    increment_achievement_stat(user_id, "quests_claimed", 1)
+    # Tracker les données d'achievement
+    track_quest_claimed(user_id)
     asyncio.create_task(check_and_unlock_achievements(user_id, bot))
     
     return {
@@ -658,7 +946,7 @@ def _today_str() -> str:
 
 
 # ==========================================
-# 3.3. ANCIEN SYSTÈME DE QUÊTES
+# 3.6. ANCIEN SYSTÈME DE QUÊTES
 # ==========================================
 
 QUEST_STREAK_MULT_STEP = 0.15
@@ -811,8 +1099,8 @@ def claim_all_daily_quests(user_id: int):
 
     update_wallet(user_id, total_reward)
     
-    # Incrémenter le compteur de quêtes réclamées
-    increment_achievement_stat(user_id, "quests_claimed", 1)
+    # Tracker les données d'achievement
+    track_quest_claimed(user_id)
     asyncio.create_task(check_and_unlock_achievements(user_id, bot))
 
     return {
@@ -824,7 +1112,7 @@ def claim_all_daily_quests(user_id: int):
 
 
 # ==========================================
-# 3.4. SYSTÈME DES ACHIEVEMENTS
+# 3.7. SYSTÈME DES ACHIEVEMENTS (NOUVEAU)
 # ==========================================
 
 TIERS_NAMES = {1: "Bronze"}
@@ -880,72 +1168,89 @@ async def load_achievements_from_github():
 
 def evaluate_stat_for_achievement(ach_id: str, user_id: int) -> int:
     """Évalue la progression d'un joueur pour un achievement par son ID"""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT beers_today, games_played, games_won FROM users WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-
-        if not row:
-            return 0
-
-        beers_today, games_played, games_won = row
-        beers_today = beers_today or 0
-        games_played = games_played or 0
-        games_won = games_won or 0
-
-        # Helper pour les stats d'achievements
-        def get_stat(stat_key):
-            cursor.execute("SELECT stat_value FROM achievement_stats WHERE user_id = ? AND stat_key = ?", (user_id, stat_key))
-            r = cursor.fetchone()
-            return r[0] if r else 0
-        
-        # =============================================
-        # MAPPING DES IDS 1 À 50
-        # =============================================
-        
+    data = get_achievement_data(user_id)
+    
+    try:
+        ach_num = int(ach_id)
+    except ValueError:
+        return 0
+    
+    # Mapping des IDs vers les champs de données
+    mapping = {
         # Quêtes (1-5)
-        if ach_id in ["1", "2", "3", "4", "5"]:
-            return get_stat("quests_claimed")
+        1: "quests_claimed",
+        2: "quests_claimed",
+        3: "quests_claimed",
+        4: "quests_claimed",
+        5: "quests_claimed",
         
         # Arène (6-10)
-        if ach_id in ["6", "7"]:
-            return games_played
-        if ach_id in ["8", "9", "10"]:
-            return games_won
+        6: "games_played",
+        7: "games_played",
+        8: "games_won",
+        9: "games_won",
+        10: "games_won",
         
         # PMU (11-15)
-        if ach_id in ["11", "12", "13", "14", "15"]:
-            return get_stat("pmu_wins")
+        11: "pmu_wins",
+        12: "pmu_wins",
+        13: "pmu_wins",
+        14: "pmu_wins",
+        15: "pmu_wins",
         
         # Crime (16-20)
-        if ach_id in ["16", "17", "18", "19", "20"]:
-            return get_stat("crimes_success")
+        16: "crimes_success",
+        17: "crimes_success",
+        18: "crimes_success",
+        19: "crimes_success",
+        20: "crimes_success",
         
         # Brinks (21-25)
-        if ach_id in ["21", "22", "23", "24", "25"]:
-            return get_stat("vault_attempts")
+        21: "vault_attempts",
+        22: "vault_attempts",
+        23: "vault_attempts",
+        24: "vault_attempts",
+        25: "vault_attempts",
         
         # Duel (26-30)
-        if ach_id in ["26", "27"]:
-            return get_stat("duels_played")
-        if ach_id in ["28", "29", "30"]:
-            return get_stat("duels_won")
+        26: "duels_played",
+        27: "duels_played",
+        28: "duels_won",
+        29: "duels_won",
+        30: "duels_won",
         
         # Daily (31-35)
-        if ach_id in ["31", "32", "33", "34", "35"]:
-            return get_stat("quests_claimed")
+        31: "quests_claimed",
+        32: "quests_claimed",
+        33: "quests_claimed",
+        34: "quests_claimed",
+        35: "quests_claimed",
         
         # Taverne (36-40)
-        if ach_id in ["36", "37", "38", "39", "40"]:
-            return beers_today
+        36: "beers_drunk",
+        37: "beers_drunk",
+        38: "beers_drunk",
+        39: "beers_drunk",
+        40: "beers_drunk",
         
         # Banque (41-45)
-        if ach_id in ["41", "42", "43", "44", "45"]:
-            return get_stat("bank_deposits")
+        41: "bank_deposits",
+        42: "bank_deposits",
+        43: "bank_deposits",
+        44: "bank_deposits",
+        45: "bank_deposits",
         
         # Larcin (46-50)
-        if ach_id in ["46", "47", "48", "49", "50"]:
-            return get_stat("larcins_success")
+        46: "larcins_success",
+        47: "larcins_success",
+        48: "larcins_success",
+        49: "larcins_success",
+        50: "larcins_success",
+    }
+    
+    field = mapping.get(ach_num)
+    if field:
+        return data.get(field, 0)
     
     return 0
 
@@ -957,6 +1262,7 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
         await load_achievements_from_github()
     
     if not ACHIEVEMENTS_DEFS:
+        print("⚠️ Aucun succès chargé")
         return []
     
     today = time.strftime("%Y-%m-%d")
@@ -974,8 +1280,9 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
             continue
 
         current_stat = evaluate_stat_for_achievement(ach_id, user_id)
+        threshold = data["thresholds"]["1"]
         
-        if current_stat >= data["thresholds"]["1"]:
+        if current_stat >= threshold:
             target_tier = 1
             reward_sum = data["rewards"]["1"]
             
@@ -1107,60 +1414,61 @@ async def check_achievements(interaction: discord.Interaction, membre: discord.M
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="debug-achievements", description="[ADMIN] Affiche les stats brutes pour debug")
-@app_commands.checks.has_permissions(administrator=True)
-async def debug_achievements(interaction: discord.Interaction, membre: discord.Member):
+@bot.tree.command(name="achievement-data", description="Affiche les données d'achievement d'un joueur")
+async def achievement_data(interaction: discord.Interaction, membre: discord.Member = None):
     await interaction.response.defer(ephemeral=True)
-    user_id = membre.id
     
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT beers_today, games_played, games_won FROM users WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        
-        cursor.execute("SELECT stat_key, stat_value FROM achievement_stats WHERE user_id = ?", (user_id,))
-        stats = cursor.fetchall()
-        
-        cursor.execute("SELECT COUNT(*) FROM player_quests WHERE user_id = ? AND claimed = 1", (user_id,))
-        player_claimed = cursor.fetchone()[0] if cursor.fetchone() else 0
+    target = membre or interaction.user
+    data = get_achievement_data(target.id)
     
     embed = discord.Embed(
-        title=f"🔍 Debug Achievements - {membre.display_name}",
+        title=f"📊 Données d'achievement - {target.display_name}",
         color=discord.Color.blue()
     )
     
-    if row:
-        embed.add_field(
-            name="📊 Stats utilisateur",
-            value=f"Bières: {row[0]}\nParties jouées: {row[1]}\nParties gagnées: {row[2]}",
-            inline=False
-        )
+    fields = {
+        "🎮 Jeux": ["games_played", "games_won", "games_lost"],
+        "🍺 Taverne": ["beers_drunk"],
+        "🥷 Crime": ["crimes_success", "crimes_attempts"],
+        "🔐 Brinks": ["vault_success", "vault_attempts"],
+        "🐎 PMU": ["pmu_wins", "pmu_bets"],
+        "⚔️ Duels": ["duels_won", "duels_played"],
+        "💼 Travail": ["work_done"],
+        "🏦 Banque": ["bank_deposits", "bank_withdrawals"],
+        "📋 Quêtes": ["quests_completed", "quests_claimed"],
+        "🎯 Jeux spéciaux": ["blackjack_wins", "slots_wins", "roulette_wins", "pfc_wins", "poker_wins", "russian_roulette_survive", "dice_wins", "arena_wins"],
+    }
     
-    embed.add_field(
-        name="📋 Quêtes réclamées (player_quests)",
-        value=f"{player_claimed}",
-        inline=False
-    )
+    for category, field_list in fields.items():
+        lines = []
+        for field in field_list:
+            value = data.get(field, 0)
+            if value > 0 or field in ["games_played", "games_won", "games_lost"]:
+                label = field.replace("_", " ").title()
+                lines.append(f"{label}: **{value}**")
+        if lines:
+            embed.add_field(name=category, value="\n".join(lines), inline=True)
     
-    if stats:
-        stat_lines = []
-        for key, value in stats:
-            stat_lines.append(f"**{key}**: {value}")
-        embed.add_field(
-            name="📊 Compteurs d'achievements",
-            value="\n".join(stat_lines),
-            inline=False
-        )
-    else:
-        embed.add_field(
-            name="📊 Compteurs d'achievements",
-            value="Aucun compteur pour le moment",
-            inline=False
-        )
+    embed.set_footer(text=f"Dernière mise à jour: {data.get('last_updated', 'Jamais')}")
     
-    embed.set_footer(text=f"ID: {user_id}")
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="reset-achievements", description="[ADMIN] Réinitialise définitivement les succès d'un joueur ou de tout le monde")
+@app_commands.checks.has_permissions(administrator=True)
+async def reset_achievements(interaction: discord.Interaction, membre: discord.Member = None):
+    await interaction.response.defer(ephemeral=True)
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        if membre:
+            cursor.execute("DELETE FROM user_achievements WHERE user_id = ?", (membre.id,))
+            msg = f"✅ Tous les succès de {membre.mention} ont été effacés définitivement !"
+        else:
+            cursor.execute("DELETE FROM user_achievements")
+            msg = "✅ Les succès de **tous les joueurs** du serveur ont été effacés définitivement !"
+        conn.commit()
+
+    await interaction.followup.send(msg, ephemeral=True)
 
 
 # =============================================================
@@ -1331,25 +1639,13 @@ def get_episode_title(ep_num: int) -> str:
 # ==========================================
 
 def check_cooldown(user_id: int, command_name: str, duration: int) -> int:
-    if TEST_MODE_ENABLED:
-        return 0
-
-    now = int(time.time())
-    key = (user_id, command_name)
-    expire = cooldowns.get(key, 0)
-    if now < expire:
-        return expire - now
-    cooldowns[key] = now + duration
-    return 0
+    """Wrapper pour utiliser Redis ou fallback mémoire"""
+    return check_cooldown_redis(user_id, command_name, duration)
 
 
 def clear_cooldown(user_id: int, command_name: str = None):
-    if command_name:
-        cooldowns.pop((user_id, command_name), None)
-    else:
-        keys_to_remove = [k for k in cooldowns if k[0] == user_id]
-        for k in keys_to_remove:
-            cooldowns.pop(k, None)
+    """Wrapper pour utiliser Redis ou fallback mémoire"""
+    clear_cooldown_redis(user_id, command_name)
 
 
 async def validate_game_bet(
@@ -1367,11 +1663,11 @@ async def validate_game_bet(
     if bet > MAX_BET:
         await reject(f"❌ La mise maximale autorisée est de **{MAX_BET} $** !")
         return False
-    wallet = get_user(interaction.user.id)[0]
+    wallet = get_user_cached(interaction.user.id)[0]
     if wallet < bet:
         await reject("❌ Solde insuffisant dans ton portefeuille ! Pense à retirer de l'argent via /banque.")
         return False
-    retry_after = check_cooldown(interaction.user.id, command_name, cooldown_sec)
+    retry_after = check_cooldown_redis(interaction.user.id, command_name, cooldown_sec)
     if retry_after > 0:
         minutes, seconds = divmod(retry_after, 60)
         await reject(f"⏳ Tu dois attendre **{minutes} min et {seconds} sec** avant de pouvoir rejouer.")
@@ -1575,8 +1871,7 @@ class DuelPFCView(ui.View):
                 update_game_stats(self.challenger.id, won=True)
                 update_game_stats(self.opponent.id, won=False)
                 update_quest_progress_v2(self.challenger.id, "duel_won", 1)
-                increment_achievement_stat(self.challenger.id, "duels_played", 1)
-                increment_achievement_stat(self.challenger.id, "duels_won", 1)
+                track_duel(self.challenger.id, won=True)
                 await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.challenger.mention} !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
@@ -1588,8 +1883,7 @@ class DuelPFCView(ui.View):
                 update_game_stats(self.opponent.id, won=True)
                 update_game_stats(self.challenger.id, won=False)
                 update_quest_progress_v2(self.opponent.id, "duel_won", 1)
-                increment_achievement_stat(self.opponent.id, "duels_played", 1)
-                increment_achievement_stat(self.opponent.id, "duels_won", 1)
+                track_duel(self.opponent.id, won=True)
                 await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.opponent.mention} !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
@@ -1659,8 +1953,7 @@ class DuelDiceView(ui.View):
                 update_game_stats(self.challenger.id, won=True)
                 update_game_stats(self.opponent.id, won=False)
                 update_quest_progress_v2(self.challenger.id, "duel_won", 1)
-                increment_achievement_stat(self.challenger.id, "duels_played", 1)
-                increment_achievement_stat(self.challenger.id, "duels_won", 1)
+                track_duel(self.challenger.id, won=True)
                 await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.challenger.mention} ({c_score} vs {o_score}) !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
@@ -1672,8 +1965,7 @@ class DuelDiceView(ui.View):
                 update_game_stats(self.opponent.id, won=True)
                 update_game_stats(self.challenger.id, won=False)
                 update_quest_progress_v2(self.opponent.id, "duel_won", 1)
-                increment_achievement_stat(self.opponent.id, "duels_played", 1)
-                increment_achievement_stat(self.opponent.id, "duels_won", 1)
+                track_duel(self.opponent.id, won=True)
                 await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
                 res_text = f"🏆 **Victoire de {self.opponent.mention} ({o_score} vs {c_score}) !** Il remporte **{format_currency(self.bet)}**."
                 await send_public_log(
@@ -1749,8 +2041,8 @@ class DuelAcceptView(ui.View):
 
     @ui.button(label="Accepter le Duel", style=discord.ButtonStyle.success, emoji="✅")
     async def accept(self, interaction: discord.Interaction, button: ui.Button):
-        wallet_opp, _, _, _, _, _, _, _, _ = get_user(self.opponent.id)
-        wallet_chal, _, _, _, _, _, _, _, _ = get_user(self.challenger.id)
+        wallet_opp, _, _, _, _, _, _, _, _ = get_user_cached(self.opponent.id)
+        wallet_chal, _, _, _, _, _, _, _, _ = get_user_cached(self.challenger.id)
 
         if wallet_opp < self.bet:
             return await interaction.response.send_message("❌ Vous n'avez pas assez d'argent dans votre portefeuille pour accepter ce duel.", ephemeral=True)
@@ -1820,7 +2112,7 @@ class DepositModal(ui.Modal, title="📥 DAB - Dépôt de billets"):
                     "❌ Le montant doit être supérieur à 0.", ephemeral=True
                 )
 
-            wallet, _, _, _, _, _, _, _, _ = get_user(interaction.user.id)
+            wallet, _, _, _, _, _, _, _, _ = get_user_cached(interaction.user.id)
             if wallet < val:
                 return await interaction.followup.send(
                     "❌ Fente à billets : Solde insuffisant dans votre portefeuille.",
@@ -1836,9 +2128,11 @@ class DepositModal(ui.Modal, title="📥 DAB - Dépôt de billets"):
                 )
                 conn.commit()
 
+            invalidate_user_cache(interaction.user.id)
+
             update_quest_progress(interaction.user.id, "bank_deposit", 1)
             update_quest_progress_v2(interaction.user.id, "bank_deposit", 1)
-            increment_achievement_stat(interaction.user.id, "bank_deposits", 1)
+            track_bank_deposit(interaction.user.id)
             await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
 
             await send_public_log(
@@ -1870,7 +2164,7 @@ class WithdrawModal(ui.Modal, title="📤 DAB - Retrait de billets"):
                     "❌ Le montant doit être supérieur à 0.", ephemeral=True
                 )
 
-            _, bank, _, _, _, _, _, _, _ = get_user(interaction.user.id)
+            _, bank, _, _, _, _, _, _, _ = get_user_cached(interaction.user.id)
             if bank < val:
                 return await interaction.followup.send(
                     "❌ Solde bancaire insuffisant.", ephemeral=True
@@ -1884,6 +2178,8 @@ class WithdrawModal(ui.Modal, title="📤 DAB - Retrait de billets"):
                     (val, val, interaction.user.id),
                 )
                 conn.commit()
+
+            invalidate_user_cache(interaction.user.id)
 
             await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
 
@@ -1905,7 +2201,7 @@ class BankView(ui.View):
     @ui.button(label="[ 💳 SOLDE ]", style=discord.ButtonStyle.primary, custom_id="persistent_bank:solde")
     async def check_balance(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
-        wallet, bank, _, _, _, _, _, _, _ = get_user(interaction.user.id)
+        wallet, bank, _, _, _, _, _, _, _ = get_user_cached(interaction.user.id)
         total = wallet + bank
         name = interaction.user.display_name.upper()[:16]
 
@@ -1999,11 +2295,11 @@ class TavernDuelBetModal(ui.Modal, title="⚔️ Tavernier - Configuration du Du
         if bet > MAX_BET:
             return await interaction.followup.send(f"❌ La mise maximale autorisée est de **{MAX_BET} $** !", ephemeral=True)
 
-        wallet_chal, _, _, _, _, _, _, _, _ = get_user(interaction.user.id)
+        wallet_chal, _, _, _, _, _, _, _, _ = get_user_cached(interaction.user.id)
         if wallet_chal < bet:
             return await interaction.followup.send("❌ Solde insuffisant dans votre portefeuille !", ephemeral=True)
 
-        wallet_opp, _, _, _, _, _, _, _, _ = get_user(self.opponent.id)
+        wallet_opp, _, _, _, _, _, _, _, _ = get_user_cached(self.opponent.id)
         if wallet_opp < bet:
             return await interaction.followup.send(f"❌ {self.opponent.mention} n'a pas assez d'argent dans son portefeuille pour accepter cette mise.", ephemeral=True)
 
@@ -2084,13 +2380,13 @@ class JimTavernView(ui.View):
         await interaction.response.defer(ephemeral=True)
         user_id = interaction.user.id
 
-        retry_after = check_cooldown(user_id, "jim_taverne", 3600)
+        retry_after = check_cooldown_redis(user_id, "jim_taverne", 3600)
         if retry_after > 0:
             minutes, seconds = divmod(retry_after, 60)
             msg_text = f'🍺 *Jim te regarde de travers* : "Tu as déjà bu, attends **{minutes}m {seconds}s**."'
             return await interaction.followup.send(msg_text, ephemeral=True)
 
-        wallet, _, _, _, beers_today, last_beer_date, _, _, _ = get_user(user_id)
+        wallet, _, _, _, beers_today, last_beer_date, _, _, _ = get_user_cached(user_id)
 
         today_str = time.strftime("%Y-%m-%d")
         if last_beer_date != today_str:
@@ -2116,6 +2412,10 @@ class JimTavernView(ui.View):
             )
             conn.commit()
 
+        invalidate_user_cache(user_id)
+
+        # Tracker les données d'achievement
+        track_beer(user_id)
         await check_and_unlock_achievements(user_id, bot_client=bot)
 
         events = [
@@ -2130,7 +2430,7 @@ class JimTavernView(ui.View):
         if event_type == "gain":
             update_wallet(user_id, amount)
         elif event_type == "loss":
-            current_wallet, _, _, _, _, _, _, _, _ = get_user(user_id)
+            current_wallet, _, _, _, _, _, _, _, _ = get_user_cached(user_id)
             actual_loss = min(amount, current_wallet)
             if actual_loss > 0:
                 update_wallet(user_id, -actual_loss)
@@ -2184,18 +2484,23 @@ class JohnRobSelect(ui.UserSelect):
         if victim.bot:
             return await interaction.followup.send("❌ Tu ne peux pas braquer un bot.", ephemeral=True)
 
-        retry_after = cooldowns.get((user_id, "john_rob"), 0) - int(time.time())
+        retry_after = 0
+        if REDIS_AVAILABLE and redis_client:
+            key = f"cooldown:{user_id}:john_rob"
+            retry_after = redis_client.ttl(key)
+        
         if retry_after > 0 and not TEST_MODE_ENABLED:
             minutes, seconds = divmod(retry_after, 60)
             return await interaction.followup.send(f'🗡️ *John* : "Calme tes ardeurs de voleur, attends **{minutes}m {seconds}s**."', ephemeral=True)
 
-        victim_wallet, _, _, _, _, _, _, _, _ = get_user(victim.id)
-        thief_wallet, _, _, _, _, _, _, _, _ = get_user(user_id)
+        victim_wallet, _, _, _, _, _, _, _, _ = get_user_cached(victim.id)
+        thief_wallet, _, _, _, _, _, _, _, _ = get_user_cached(user_id)
 
         if victim_wallet < 50:
             return await interaction.followup.send(f"🗡️ *John* : \" {victim.mention} n'a pas un sou, c'est une perte de temps.\"", ephemeral=True)
 
-        check_cooldown(user_id, "john_rob", 60)
+        if REDIS_AVAILABLE and redis_client:
+            redis_client.setex(f"cooldown:{user_id}:john_rob", 60, "1")
 
         roll = random.random()
         
@@ -2203,7 +2508,7 @@ class JohnRobSelect(ui.UserSelect):
             stolen = random.randint(50, int(victim_wallet * 0.7))
             update_wallet(victim.id, -stolen)
             update_wallet(user_id, stolen)
-            increment_achievement_stat(user_id, "larcins_success", 1)
+            track_larcin(user_id, success=True)
             await check_and_unlock_achievements(user_id, bot_client=bot)
             
             await send_public_log(
@@ -2275,7 +2580,7 @@ class BrinksVaultModal(ui.Modal, title="🔒 Coffre de la Brinks - Code à 4 chi
 
         if user_input == self.secret_code:
             update_wallet(user_id, self.prize)
-            increment_achievement_stat(user_id, "vault_attempts", 1)
+            track_vault(user_id, success=True)
             await check_and_unlock_achievements(user_id, bot_client=bot)
             
             await send_public_log(
@@ -2313,13 +2618,14 @@ class BrinksVaultModal(ui.Modal, title="🔒 Coffre de la Brinks - Code à 4 chi
             )
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         else:
-            _, bank, _, _, _, _, _, _, _ = get_user(user_id)
+            _, bank, _, _, _, _, _, _, _ = get_user_cached(user_id)
             fine = int(bank * 0.05)
             if fine > 0:
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute("UPDATE users SET bank = bank - ? WHERE user_id = ?", (fine, user_id))
                     conn.commit()
+                invalidate_user_cache(user_id)
 
             await send_public_log(
                 content=f"🚨 **{interaction.user.display_name}** s'est fait prendre lors d'un braquage de la Brinks ! Amende : **-{format_currency(fine)}**"
@@ -2356,21 +2662,21 @@ class JohnCrimeView(ui.View):
     async def crime_btn(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         user_id = interaction.user.id
-        retry_after = check_cooldown(user_id, "john_crime", 60)
+        retry_after = check_cooldown_redis(user_id, "john_crime", 60)
         if retry_after > 0:
             minutes, seconds = divmod(retry_after, 60)
             msg_text = f'🥷 *John* : "Reviens dans **{minutes}m {seconds}s**."'
             return await interaction.followup.send(msg_text, ephemeral=True)
 
         success = random.choice([True, False])
-        wallet, _, _, _, _, _, _, _, _ = get_user(user_id)
+        wallet, _, _, _, _, _, _, _, _ = get_user_cached(user_id)
         update_quest_progress(user_id, "crime_attempt", 1)
         update_quest_progress_v2(user_id, "crime_attempt", 1)
 
         if success:
             gain = random.randint(300, 1000)
             update_wallet(user_id, gain)
-            increment_achievement_stat(user_id, "crimes_success", 1)
+            track_crime(user_id, success=True)
             await check_and_unlock_achievements(user_id, bot_client=bot)
             
             await send_public_log(
@@ -2392,7 +2698,11 @@ class JohnCrimeView(ui.View):
     @ui.button(label="Braquer quelqu'un", style=discord.ButtonStyle.secondary, emoji="🗡️", custom_id="john_rob_btn")
     async def rob_btn(self, interaction: discord.Interaction, button: ui.Button):
         user_id = interaction.user.id
-        retry_after = cooldowns.get((user_id, "john_rob"), 0) - int(time.time())
+        retry_after = 0
+        if REDIS_AVAILABLE and redis_client:
+            key = f"cooldown:{user_id}:john_rob"
+            retry_after = redis_client.ttl(key)
+        
         if retry_after > 0:
             minutes, seconds = divmod(retry_after, 60)
             msg_text = f'🗡️ *John* : "Patiente encore **{minutes}m {seconds}s**."'
@@ -2408,7 +2718,7 @@ class JohnCrimeView(ui.View):
     @ui.button(label="Braquage de la Brinks", style=discord.ButtonStyle.success, emoji="🔐", custom_id="john_vault_btn")
     async def vault_btn(self, interaction: discord.Interaction, button: ui.Button):
         user_id = interaction.user.id
-        retry_after = check_cooldown(user_id, "john_vault", 3600)
+        retry_after = check_cooldown_redis(user_id, "john_vault", 3600)
         if retry_after > 0:
             hours, remainder = divmod(retry_after, 3600)
             minutes, seconds = divmod(remainder, 60)
@@ -2484,6 +2794,7 @@ class ArenaFightView(ui.View):
             update_wallet(self.user_id, gain - self.bet)
             update_game_stats(self.user_id, won=True)
             update_quest_progress_v2(self.user_id, "arena_fight", 1)
+            track_game_win(self.user_id, "arena")
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             
             await send_public_log(
@@ -2622,11 +2933,11 @@ class ArenaDuelBetModal(ui.Modal, title="⚔️ Arène - Mise du Duel"):
         if bet > MAX_BET:
             return await interaction.followup.send(f"❌ La mise maximale autorisée est de **{MAX_BET} $** !", ephemeral=True)
 
-        wallet_chal, _, _, _, _, _, _, _, _ = get_user(interaction.user.id)
+        wallet_chal, _, _, _, _, _, _, _, _ = get_user_cached(interaction.user.id)
         if wallet_chal < bet:
             return await interaction.followup.send("❌ Solde insuffisant dans votre portefeuille !", ephemeral=True)
 
-        wallet_opp, _, _, _, _, _, _, _, _ = get_user(self.opponent.id)
+        wallet_opp, _, _, _, _, _, _, _, _ = get_user_cached(self.opponent.id)
         if wallet_opp < bet:
             return await interaction.followup.send(f"❌ {self.opponent.mention} n'a pas assez d'argent dans son portefeuille pour accepter ce duel.", ephemeral=True)
 
@@ -2708,7 +3019,7 @@ async def run_pmu_game(interaction: discord.Interaction, cheval: int, bet: int):
         update_wallet(interaction.user.id, gain - bet)
         update_game_stats(interaction.user.id, won=True)
         update_quest_progress_v2(interaction.user.id, "pmu_win", 1)
-        increment_achievement_stat(interaction.user.id, "pmu_wins", 1)
+        track_pmu(interaction.user.id, won=True)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         res_msg = f"🏆 **[PMU] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! Ton pari sur **{chevaux[cheval]['nom']}** (cote x{cote}) passe haut la main ! +**{format_currency(gain)}**"
         
@@ -2813,7 +3124,7 @@ async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int
         update_wallet(interaction.user.id, gain - bet)
         update_game_stats(interaction.user.id, won=True)
         update_quest_progress_v2(interaction.user.id, "pmu_win", 1)
-        increment_achievement_stat(interaction.user.id, "pmu_wins", 1)
+        track_pmu(interaction.user.id, won=True)
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         res_msg = f"🏆 **[BROOK LA BOOKMAKEUSE] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! Ton pari sur **{chevaux[horse_choice]['nom']}** (cote x{cote}) passe haut la main ! +**{format_currency(gain)}**"
         
@@ -2940,11 +3251,11 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, game:
     if bet > MAX_BET:
         return await interaction.followup.send(f"❌ La mise maximale autorisée est de **{MAX_BET} $** !", ephemeral=True)
 
-    wallet_chal, _, _, _, _, _, _, _, _ = get_user(interaction.user.id)
+    wallet_chal, _, _, _, _, _, _, _, _ = get_user_cached(interaction.user.id)
     if wallet_chal < bet:
         return await interaction.followup.send("❌ Solde insuffisant dans votre portefeuille !", ephemeral=True)
 
-    wallet_opp, _, _, _, _, _, _, _, _ = get_user(opponent.id)
+    wallet_opp, _, _, _, _, _, _, _, _ = get_user_cached(opponent.id)
     if wallet_opp < bet:
         return await interaction.followup.send(f"❌ {opponent.mention} n'a pas assez d'argent dans son portefeuille pour accepter cette mise.", ephemeral=True)
 
@@ -2976,7 +3287,7 @@ async def pmu(interaction: discord.Interaction):
 async def vault(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     user_id = interaction.user.id
-    retry_after = check_cooldown(user_id, "john_vault", 3600)
+    retry_after = check_cooldown_redis(user_id, "john_vault", 3600)
     if retry_after > 0:
         hours, remainder = divmod(retry_after, 3600)
         minutes, seconds = divmod(remainder, 60)
@@ -3004,7 +3315,7 @@ async def vault(interaction: discord.Interaction):
 async def profile(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     user = interaction.user
-    wallet, bank, _, streak, beers_today, _, games_played, games_won, games_lost = get_user(user.id)
+    wallet, bank, _, streak, beers_today, _, games_played, games_won, games_lost = get_user_cached(user.id)
     total_money = wallet + bank
 
     with get_db_connection() as conn:
@@ -3098,6 +3409,26 @@ async def toggle_animations(interaction: discord.Interaction, mode: str):
 @bot.tree.command(name="richest", description="Affiche l'économie globale du serveur et le classement exact")
 async def richest(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=False)
+    
+    top_redis = get_top_10_richest()
+    
+    if top_redis and REDIS_AVAILABLE:
+        embed = discord.Embed(title="🏆 Classement", color=0xF1C40F)
+        description = ["🌐 **Global** : `Classement Redis`", "──────────────"]
+        medals = ["🥇", "🥈", "🥉"]
+        
+        for index, (user_id, score) in enumerate(top_redis, start=1):
+            member = interaction.guild.get_member(int(user_id)) if interaction.guild else None
+            user_name = member.mention if member else f"<@{user_id}>"
+            rank_icon = medals[index - 1] if index <= 3 else f"`#{index:02d}`"
+            description.append(f"{rank_icon} {user_name} ➔ `{format_currency(int(score))}`")
+        
+        embed.description = "\n".join(description)
+        if interaction.guild and interaction.guild.icon:
+            embed.set_thumbnail(url=interaction.guild.icon.url)
+        await interaction.followup.send(embed=embed)
+        return
+    
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT user_id, (COALESCE(wallet, 0) + COALESCE(bank, 0)) AS total FROM users ORDER BY total DESC")
@@ -3127,13 +3458,13 @@ async def richest(interaction: discord.Interaction):
 async def daily(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=False)
     user_id = interaction.user.id
-    retry_after = check_cooldown(user_id, "daily", 86400)
+    retry_after = check_cooldown_redis(user_id, "daily", 86400)
     if retry_after > 0:
         hours, remainder = divmod(retry_after, 3600)
         minutes, seconds = divmod(remainder, 60)
         return await interaction.followup.send(f"⏳ Déjà réclamé ! Reviens dans **{hours}h {minutes}m {seconds}s**.", ephemeral=True)
 
-    _, _, last_daily, streak, _, _, _, _, _ = get_user(user_id)
+    _, _, last_daily, streak, _, _, _, _, _ = get_user_cached(user_id)
     now = int(time.time())
 
     time_passed = now - last_daily
@@ -3154,6 +3485,8 @@ async def daily(interaction: discord.Interaction):
         cursor = conn.cursor()
         cursor.execute("UPDATE users SET last_daily = ?, streak = ? WHERE user_id = ?", (now, streak, user_id))
         conn.commit()
+    
+    invalidate_user_cache(user_id)
 
     embed = discord.Embed(title="🎁 Daily", description=f"Tu as reçu **{format_currency(total_reward)}** !", color=discord.Color.blurple())
     embed.add_field(name="🔥 Série", value=f"**{streak}j**", inline=False)
@@ -3289,28 +3622,11 @@ async def achievements(interaction: discord.Interaction):
     await interaction.followup.send(file=file, view=view, ephemeral=True)
 
 
-@bot.tree.command(name="reset-achievements", description="[ADMIN] Réinitialise définitivement les succès d'un joueur ou de tout le monde")
-@app_commands.checks.has_permissions(administrator=True)
-async def reset_achievements(interaction: discord.Interaction, membre: discord.Member = None):
-    await interaction.response.defer(ephemeral=True)
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        if membre:
-            cursor.execute("DELETE FROM user_achievements WHERE user_id = ?", (membre.id,))
-            msg = f"✅ Tous les succès de {membre.mention} ont été effacés définitivement !"
-        else:
-            cursor.execute("DELETE FROM user_achievements")
-            msg = "✅ Les succès de **tous les joueurs** du serveur ont été effacés définitivement !"
-        conn.commit()
-
-    await interaction.followup.send(msg, ephemeral=True)
-
-
 @bot.tree.command(name="work", description="Gagne un peu d'argent en travaillant")
 async def work(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=False)
     user_id = interaction.user.id
-    retry_after = check_cooldown(user_id, "work", 3600)
+    retry_after = check_cooldown_redis(user_id, "work", 3600)
     if retry_after > 0:
         minutes, seconds = divmod(retry_after, 60)
         await interaction.followup.send(
@@ -3336,6 +3652,7 @@ async def work(interaction: discord.Interaction):
     update_wallet(user_id, gain)
     update_quest_progress(user_id, "work_done", 1)
     update_quest_progress_v2(user_id, "work_done", 1)
+    track_work(user_id)
     await check_and_unlock_achievements(user_id, bot_client=bot)
 
     await send_public_log(
@@ -3363,7 +3680,7 @@ async def pay(interaction: discord.Interaction, receiver: discord.Member, amount
     if amount <= 0:
         return await interaction.followup.send("❌ Montant invalide.", ephemeral=True)
 
-    sender_wallet, _, _, _, _, _, _, _, _ = get_user(interaction.user.id)
+    sender_wallet, _, _, _, _, _, _, _, _ = get_user_cached(interaction.user.id)
     if sender_wallet < amount:
         return await interaction.followup.send("❌ Solde insuffisant.", ephemeral=True)
 
@@ -3371,6 +3688,7 @@ async def pay(interaction: discord.Interaction, receiver: discord.Member, amount
     update_wallet(receiver.id, amount)
     update_quest_progress(interaction.user.id, "pay_sent", 1)
     update_quest_progress_v2(interaction.user.id, "pay_sent", 1)
+    track_pay_sent(interaction.user.id)
     
     await send_public_log(
         content=f"💸 **{interaction.user.display_name}** a envoyé **{format_currency(amount)}** à {receiver.display_name} !"
@@ -3714,8 +4032,10 @@ async def remove_money(interaction: discord.Interaction, membre: discord.Member,
                 (montant, membre.id),
             )
         conn.commit()
+    
+    invalidate_user_cache(membre.id)
 
-    wallet, bank, _, _, _, _, _, _, _ = get_user(membre.id)
+    wallet, bank, _, _, _, _, _, _, _ = get_user_cached(membre.id)
     compte_label = "portefeuille" if compte == "wallet" else "bank"
     embed = discord.Embed(
         title="💸 Retrait Administrateur",
@@ -3732,7 +4052,7 @@ async def remove_money(interaction: discord.Interaction, membre: discord.Member,
 @app_commands.checks.has_permissions(administrator=True)
 async def reset_cooldowns(interaction: discord.Interaction, membre: discord.Member):
     await interaction.response.defer(ephemeral=True)
-    clear_cooldown(membre.id)
+    clear_cooldown_redis(membre.id)
     await interaction.followup.send(f"⏳ Cooldowns réinitialisés pour {membre.mention}.", ephemeral=True)
 
 
@@ -3758,7 +4078,7 @@ async def toggle_cooldowns(interaction: discord.Interaction):
 
 
 # ==========================================
-# 10. JEUX DE CASINO - AJOUT DES COMPTEURS
+# 10. JEUX DE CASINO - AVEC TRACKING DES ACHIEVEMENTS
 # ==========================================
 
 class BlackjackGame:
@@ -3859,6 +4179,7 @@ class BlackjackView(ui.View):
             update_wallet(self.game.user_id, gain)
             update_game_stats(self.game.user_id, won=True)
             update_quest_progress_v2(self.game.user_id, "blackjack_win", 1)
+            track_game_win(self.game.user_id, "blackjack")
             await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
             
             await send_public_log(
@@ -3900,6 +4221,7 @@ class BlackjackView(ui.View):
             update_wallet(self.game.user_id, gain)
             update_game_stats(self.game.user_id, won=True)
             update_quest_progress_v2(self.game.user_id, "blackjack_win", 1)
+            track_game_win(self.game.user_id, "blackjack")
             await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
             res = f"🎉 Banque > 21 ! +{format_currency(gain)}"
             
@@ -3911,6 +4233,7 @@ class BlackjackView(ui.View):
             update_wallet(self.game.user_id, gain)
             update_game_stats(self.game.user_id, won=True)
             update_quest_progress_v2(self.game.user_id, "blackjack_win", 1)
+            track_game_win(self.game.user_id, "blackjack")
             await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
             res = f"🎉 Gagné ! +{format_currency(gain)}"
             
@@ -3990,6 +4313,7 @@ async def run_slots_game(interaction: discord.Interaction, bet: int):
         update_wallet(interaction.user.id, reward - bet)
         update_game_stats(interaction.user.id, won=True)
         update_quest_progress_v2(interaction.user.id, "slots_win", 1)
+        track_game_win(interaction.user.id, "slots")
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         
         await send_public_log(
@@ -4001,6 +4325,7 @@ async def run_slots_game(interaction: discord.Interaction, bet: int):
         update_wallet(interaction.user.id, reward - bet)
         update_game_stats(interaction.user.id, won=True)
         update_quest_progress_v2(interaction.user.id, "slots_win", 1)
+        track_game_win(interaction.user.id, "slots")
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         
         await send_public_log(
@@ -4089,6 +4414,7 @@ class DiceView(ui.View):
             update_wallet(self.user_id, self.bet)
             update_game_stats(self.user_id, won=True)
             update_quest_progress_v2(self.user_id, "dice_win", 1)
+            track_game_win(self.user_id, "dice")
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             status = f"VICTOIRE! +{format_currency(self.bet)}"
             
@@ -4196,6 +4522,7 @@ class RouletteView(ui.View):
             update_wallet(self.user_id, reward - self.bet)
             update_game_stats(self.user_id, won=True)
             update_quest_progress_v2(self.user_id, "roulette_win", 1)
+            track_game_win(self.user_id, "roulette")
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             status = f"GAGNÉ! +{format_currency(reward)}"
             
@@ -4313,6 +4640,7 @@ class RussianRouletteView(ui.View):
             update_wallet(self.user_id, total_gain)
             update_game_stats(self.user_id, won=True)
             update_quest_progress_v2(self.user_id, "russian_roulette_survive", 1)
+            track_game_win(self.user_id, "russian_roulette")
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             
             await send_public_log(
@@ -4362,6 +4690,7 @@ class RussianRouletteView(ui.View):
         update_wallet(self.user_id, won)
         update_game_stats(self.user_id, won=True)
         update_quest_progress_v2(self.user_id, "russian_roulette_survive", 1)
+        track_game_win(self.user_id, "russian_roulette")
         await check_and_unlock_achievements(self.user_id, bot_client=bot)
         
         await send_public_log(
@@ -4484,6 +4813,7 @@ class PFCView(ui.View):
             update_wallet(self.user_id, self.bet)
             update_game_stats(self.user_id, won=True)
             update_quest_progress_v2(self.user_id, "pfc_win", 1)
+            track_game_win(self.user_id, "pfc")
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             res = "🎉 Gagné !"
             face = "(^o^) 🏆"
@@ -4565,6 +4895,7 @@ async def run_poker_game(interaction: discord.Interaction, mise: int):
         update_wallet(interaction.user.id, gain)
         update_game_stats(interaction.user.id, won=True)
         update_quest_progress_v2(interaction.user.id, "poker_win", 1)
+        track_game_win(interaction.user.id, "poker")
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
         
         await send_public_log(
@@ -4662,7 +4993,7 @@ class EpisodeShopView(ui.View):
             if interaction.user.id != self.member.id:
                 return await interaction.response.send_message("❌ Ce n'est pas votre boutique !", ephemeral=True)
 
-            wallet = get_user(self.member.id)[0]
+            wallet = get_user_cached(self.member.id)[0]
             if wallet < item_price:
                 return await interaction.response.send_message(f"❌ Solde insuffisant ! Il te manque {format_currency(item_price - wallet)}.", ephemeral=True)
 
@@ -4675,6 +5006,8 @@ class EpisodeShopView(ui.View):
             """, (self.member.id, item_name))
             conn.commit()
             conn.close()
+
+            invalidate_user_cache(self.member.id)
 
             new_view = EpisodeShopView(self.member, self.episode_num)
 
@@ -4762,7 +5095,7 @@ class DynamicShopView(ui.View):
                 return await interaction.response.send_message("❌ Cet article n'existe plus.", ephemeral=True)
 
             item_name, item_price, role_to_give_id = item
-            wallet = get_user(self.member.id)[0]
+            wallet = get_user_cached(self.member.id)[0]
 
             if wallet < item_price:
                 return await interaction.response.send_message(f"❌ Solde insuffisant ! Il te manque {format_currency(item_price - wallet)}.", ephemeral=True)
@@ -4776,6 +5109,8 @@ class DynamicShopView(ui.View):
             """, (self.member.id, item_name))
             conn.commit()
             conn.close()
+
+            invalidate_user_cache(self.member.id)
 
             feedback_extra = ""
             if role_to_give_id:
