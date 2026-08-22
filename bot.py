@@ -700,6 +700,9 @@ def claim_all_public_quests(user_id: int):
     
     update_wallet(user_id, total_reward)
     
+    # Vérifier les achievements
+    asyncio.create_task(check_and_unlock_achievements(user_id, bot))
+    
     return {
         "total_reward": total_reward,
         "all_completed": True
@@ -790,11 +793,12 @@ def get_daily_quests(user_id: int):
             {"key": "arena_fight", "desc_tpl": "Affronter Bob dans l'arène {target} fois", "target_range": (1, 2)},
             {"key": "duel_played", "desc_tpl": "Faire {target} duel(s) PvP", "target_range": (1, 2)},
             {"key": "bank_deposit", "desc_tpl": "Déposer à la banque {target} fois", "target_range": (1, 3)},
+            {"key": "pay_sent", "desc_tpl": "Envoyer de l'argent via /pay {target} fois", "target_range": (1, 2)},
             {"key": "crime_attempt", "desc_tpl": "Tenter un crime chez John {target} fois", "target_range": (1, 3)},
             {"key": "pmu_bet", "desc_tpl": "Parier chez Brook {target} fois", "target_range": (1, 3)},
             {"key": "vault_attempt", "desc_tpl": "Braquer la Brinks {target} fois", "target_range": (1, 2)},
             {"key": "money_earned", "desc_tpl": "Gagner un total de {target} $", "target_range": (500, 1500)},
-            {"key": "beer_drunk", "desc_tpl": "Commander {target} pinte(s) chez Jim", "target_range": (2, 5)},
+            {"key": "beer_drunk", "desc_tpl": "Commander {target} pinte(s) chez Jim", "target_range": (1, 3)},
         ]
         chosen = random.sample(quest_pool, k=min(5, len(quest_pool)))
         quests = []
@@ -869,6 +873,9 @@ def claim_all_daily_quests(user_id: int):
         conn.commit()
 
     update_wallet(user_id, total_reward)
+    
+    # Vérifier les achievements
+    asyncio.create_task(check_and_unlock_achievements(user_id, bot))
 
     return {
         "base_reward": base_reward,
@@ -949,7 +956,6 @@ def evaluate_stat_for_achievement(ach_id: str, user_id: int) -> int:
         beers_today = beers_today or 0
         games_played = games_played or 0
         games_won = games_won or 0
-        total_money = wallet + bank
 
         # Helper pour les requêtes SQL
         def count_claimed_quests():
@@ -962,87 +968,53 @@ def evaluate_stat_for_achievement(ach_id: str, user_id: int) -> int:
             result = cursor.fetchone()
             return result[0] if result else 0
         
-        # Mapping ID -> valeur
-        stats = {
-            # Quêtes (1-5)
-            "1": count_claimed_quests,
-            "2": count_claimed_quests,
-            "3": count_claimed_quests,
-            "4": count_claimed_quests,
-            "5": count_claimed_quests,
-            
-            # Arène (6-10)
-            "6": lambda: games_played,
-            "7": lambda: games_played,
-            "8": lambda: games_won,
-            "9": lambda: games_won,
-            "10": lambda: games_won,
-            
-            # PMU (11-15)
-            "11": lambda: count_quest_key("pmu_win"),
-            "12": lambda: count_quest_key("pmu_win"),
-            "13": lambda: count_quest_key("pmu_win"),
-            "14": lambda: count_quest_key("pmu_win"),
-            "15": lambda: count_quest_key("pmu_win"),
-            
-            # Crime (16-20)
-            "16": lambda: count_quest_key("crime_attempt"),
-            "17": lambda: count_quest_key("crime_attempt"),
-            "18": lambda: count_quest_key("crime_attempt"),
-            "19": lambda: count_quest_key("crime_attempt"),
-            "20": lambda: count_quest_key("crime_attempt"),
-            
-            # Brinks (21-25)
-            "21": lambda: count_quest_key("vault_attempt"),
-            "22": lambda: count_quest_key("vault_attempt"),
-            "23": lambda: count_quest_key("vault_attempt"),
-            "24": lambda: count_quest_key("vault_attempt"),
-            "25": lambda: count_quest_key("vault_attempt"),
-            
-            # Duel (26-30)
-            "26": lambda: count_quest_key("duel_played"),
-            "27": lambda: count_quest_key("duel_played"),
-            "28": lambda: count_quest_key("duel_won"),
-            "29": lambda: count_quest_key("duel_won"),
-            "30": lambda: count_quest_key("duel_won"),
-            
-            # Daily (31-35)
-            "31": count_claimed_quests,
-            "32": count_claimed_quests,
-            "33": count_claimed_quests,
-            "34": count_claimed_quests,
-            "35": count_claimed_quests,
-            
-            # Taverne (36-40)
-            "36": lambda: beers_today,
-            "37": lambda: beers_today,
-            "38": lambda: beers_today,
-            "39": lambda: beers_today,
-            "40": lambda: beers_today,
-            
-            # Banque (41-45)
-            "41": lambda: count_quest_key("bank_deposit"),
-            "42": lambda: count_quest_key("bank_deposit"),
-            "43": lambda: count_quest_key("bank_deposit"),
-            "44": lambda: count_quest_key("bank_deposit"),
-            "45": lambda: count_quest_key("bank_deposit"),
-            
-            # Larcin (46-50)
-            "46": lambda: count_quest_key("crime_attempt"),
-            "47": lambda: count_quest_key("crime_attempt"),
-            "48": lambda: count_quest_key("crime_attempt"),
-            "49": lambda: count_quest_key("crime_attempt"),
-            "50": lambda: count_quest_key("crime_attempt"),
-        }
+        # =============================================
+        # MAPPING COMPLET DES IDS 1 À 50
+        # =============================================
         
-        # Retourner la valeur calculée
-        if ach_id in stats:
-            try:
-                result = stats[ach_id]()
-                return result if result else 0
-            except Exception as e:
-                print(f"❌ Erreur évaluation achievement {ach_id}: {e}")
-                return 0
+        # Quêtes (1-5) - toutes utilisent count_claimed_quests
+        if ach_id in ["1", "2", "3", "4", "5"]:
+            return count_claimed_quests()
+        
+        # Arène (6-10)
+        if ach_id in ["6", "7"]:  # arena_essai, arena_assidu
+            return games_played
+        if ach_id in ["8", "9", "10"]:  # arena_guerrier, arena_champion, arena_terreur
+            return games_won
+        
+        # PMU (11-15)
+        if ach_id in ["11", "12", "13", "14", "15"]:
+            return count_quest_key("pmu_win")
+        
+        # Crime (16-20)
+        if ach_id in ["16", "17", "18", "19", "20"]:
+            return count_quest_key("crime_attempt")
+        
+        # Brinks (21-25)
+        if ach_id in ["21", "22", "23", "24", "25"]:
+            return count_quest_key("vault_attempt")
+        
+        # Duel (26-30)
+        if ach_id in ["26", "27"]:  # duel_premier, duel_bretteur
+            return count_quest_key("duel_played")
+        if ach_id in ["28", "29", "30"]:  # duel_collectionneur, duel_invaincu, duel_dieu
+            return count_quest_key("duel_won")
+        
+        # Daily (31-35)
+        if ach_id in ["31", "32", "33", "34", "35"]:
+            return count_claimed_quests()
+        
+        # Taverne (36-40)
+        if ach_id in ["36", "37", "38", "39", "40"]:
+            return beers_today
+        
+        # Banque (41-45)
+        if ach_id in ["41", "42", "43", "44", "45"]:
+            return count_quest_key("bank_deposit")
+        
+        # Larcin (46-50)
+        if ach_id in ["46", "47", "48", "49", "50"]:
+            return count_quest_key("crime_attempt")
     
     return 0
 
@@ -1052,6 +1024,11 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
     
     if not ACHIEVEMENTS_LOADED:
         await load_achievements_from_github()
+    
+    # Si pas de succès chargés, on sort
+    if not ACHIEVEMENTS_DEFS:
+        print("⚠️ Aucun succès chargé, impossible de vérifier les déblocages")
+        return []
     
     today = time.strftime("%Y-%m-%d")
     unlocked_now = []
@@ -1073,10 +1050,14 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
         # Évaluer la progression
         current_stat = evaluate_stat_for_achievement(ach_id, user_id)
         
+        print(f"🔍 Achievement {ach_id} ({data['title']}) : {current_stat}/{data['thresholds']['1']}")
+        
         # Vérifier si le seuil est atteint
         if current_stat >= data["thresholds"]["1"]:
             target_tier = 1
             reward_sum = data["rewards"]["1"]
+            
+            print(f"✅ Débloqué ! {data['title']} pour {user_id}")
             
             # Donner la récompense
             update_wallet(user_id, reward_sum)
@@ -1176,6 +1157,36 @@ async def achievements_list(interaction: discord.Interaction):
         embed.set_footer(text=f"Total: {len(ACHIEVEMENTS_DEFS)} succès • 20 affichés")
     else:
         embed.set_footer(text=f"Total: {len(ACHIEVEMENTS_DEFS)} succès")
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="check-achievements", description="[ADMIN] Force la vérification des succès pour un joueur")
+@app_commands.checks.has_permissions(administrator=True)
+async def check_achievements(interaction: discord.Interaction, membre: discord.Member = None):
+    await interaction.response.defer(ephemeral=True)
+    
+    target_id = membre.id if membre else interaction.user.id
+    unlocked = await check_and_unlock_achievements(target_id, bot)
+    
+    if unlocked:
+        embed = discord.Embed(
+            title="✅ Succès vérifiés",
+            description=f"{len(unlocked)} nouveau(x) succès débloqué(s) !",
+            color=discord.Color.green()
+        )
+        for ach in unlocked:
+            embed.add_field(
+                name=ach["title"],
+                value=f"Récompense : {format_currency(ach['reward'])}",
+                inline=False
+            )
+    else:
+        embed = discord.Embed(
+            title="ℹ️ Aucun succès débloqué",
+            description="Le joueur n'a pas atteint les conditions pour débloquer de nouveaux succès.",
+            color=discord.Color.blue()
+        )
     
     await interaction.followup.send(embed=embed, ephemeral=True)
 
