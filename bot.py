@@ -229,6 +229,7 @@ def init_db():
                 arena_fights INTEGER DEFAULT 0,
                 arena_wins INTEGER DEFAULT 0,
                 larcins_success INTEGER DEFAULT 0,
+                larcins_attempts INTEGER DEFAULT 0,
                 last_updated TEXT DEFAULT ''
             )
         """)
@@ -421,7 +422,7 @@ def get_achievement_value(user_id: int, field: str) -> int:
 
 
 # ==========================================
-# 3.2. FONCTIONS DE TRACKING POUR ACHIEVEMENTS
+# 3.2. FONCTIONS DE TRACKING POUR ACHIEVEMENTS - CORRIGÉES
 # ==========================================
 
 def track_game_played(user_id: int, won: bool = False, lost: bool = False):
@@ -465,11 +466,17 @@ def track_work(user_id: int):
 def track_bank_deposit(user_id: int):
     increment_achievement_data(user_id, bank_deposits=1)
 
+def track_bank_withdrawal(user_id: int):
+    increment_achievement_data(user_id, bank_withdrawals=1)
+
 def track_pay_sent(user_id: int):
     increment_achievement_data(user_id, pay_sent=1)
 
+def track_pay_received(user_id: int):
+    increment_achievement_data(user_id, pay_received=1)
+
 def track_quest_claimed(user_id: int):
-    increment_achievement_data(user_id, quests_claimed=1)
+    increment_achievement_data(user_id, quests_claimed=1, quests_completed=1)
 
 def track_game_win(user_id: int, game_type: str):
     game_mapping = {
@@ -487,8 +494,16 @@ def track_game_win(user_id: int, game_type: str):
         increment_achievement_data(user_id, **{field: 1})
 
 def track_larcin(user_id: int, success: bool = False):
+    increments = {"larcins_attempts": 1}
     if success:
-        increment_achievement_data(user_id, larcins_success=1)
+        increments["larcins_success"] = 1
+    increment_achievement_data(user_id, **increments)
+
+def track_arena_fight(user_id: int, won: bool = False):
+    increments = {"arena_fights": 1}
+    if won:
+        increments["arena_wins"] = 1
+    increment_achievement_data(user_id, **increments)
 
 
 # ==========================================
@@ -1077,7 +1092,7 @@ def claim_all_daily_quests(user_id: int):
 
 
 # ==========================================
-# 3.7. SYSTÈME DES ACHIEVEMENTS (STYLE MEE6)
+# 3.7. SYSTÈME DES ACHIEVEMENTS (STYLE MEE6) - CORRIGÉ
 # ==========================================
 
 TIERS_NAMES = {1: "Bronze"}
@@ -1117,77 +1132,83 @@ async def load_achievements_from_github():
 
 
 def evaluate_stat_for_achievement(ach_key: str, user_id: int) -> int:
-    """Évalue la progression d'un joueur pour un achievement - Style MEE6"""
+    """
+    Évalue la progression d'un joueur pour un achievement - Style MEE6
+    Cette fonction utilise les données de la table achievement_data pour tracker
+    toutes les statistiques spécifiques.
+    """
+    # Récupérer les données d'achievement
+    ach_data = get_achievement_data(user_id)
+    
+    # Récupérer aussi les données de base de la table users
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        
         cursor.execute("""
-            SELECT games_played, games_won, beers_today
+            SELECT games_played, games_won, beers_today, streak
             FROM users WHERE user_id = ?
         """, (user_id,))
-        
         row = cursor.fetchone()
         if not row:
             return 0
         
-        games_played, games_won, beers_today = row
+        games_played, games_won, beers_today, streak = row
         games_played = games_played or 0
         games_won = games_won or 0
         beers_today = beers_today or 0
+        streak = streak or 0
         
+        # Quêtes totales (player_quests + daily_quests)
         cursor.execute("SELECT COUNT(*) FROM player_quests WHERE user_id = ? AND claimed = 1", (user_id,))
         player_quests = cursor.fetchone()[0] or 0
         cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
         daily_quests = cursor.fetchone()[0] or 0
         total_quests = player_quests + daily_quests
-        
-        # === MAPPING AVEC LES CLÉS EXACTES DE TON JSON ===
-        
-        # Quêtes (quest_bapteme, quest_habitué, quest_veteran, quest_seigneur, quest_legende)
-        if ach_key.startswith("quest_"):
-            return total_quests
-        
-        # Arène (arena_essai, arena_assidu, arena_guerrier, arena_champion, arena_terreur)
-        if ach_key.startswith("arena_"):
-            if "essai" in ach_key or "assidu" in ach_key:
-                return games_played
-            return games_won
-        
-        # PMU (pmu_premier, pmu_averti, pmu_connaisseur, pmu_maitre, pmu_oracle)
-        if ach_key.startswith("pmu_"):
-            return games_won
-        
-        # Crime (crime_premier, crime_voyou, crime_criminel, crime_seigneur, crime_fantome)
-        if ach_key.startswith("crime_"):
-            return games_played
-        
-        # Brinks (vault_premier, vault_apprenti, vault_toubib, vault_virtuose, vault_casse)
-        if ach_key.startswith("vault_"):
-            return games_played
-        
-        # Duel (duel_premier, duel_bretteur, duel_collectionneur, duel_invaincu, duel_dieu)
-        if ach_key.startswith("duel_"):
-            if "premier" in ach_key or "bretteur" in ach_key:
-                return games_played
-            return games_won
-        
-        # Daily (daily_eveil, daily_citoyen, daily_epargnant, daily_pilier, daily_fondateur)
-        if ach_key.startswith("daily_"):
-            return total_quests
-        
-        # Taverne (taverne_tournee, taverne_regulier, taverne_trompe, taverne_tonneau, taverne_eponge)
-        if ach_key.startswith("taverne_"):
-            return beers_today
-        
-        # Banque (bank_premier, bank_poire, bank_gerant, bank_investisseur, bank_magnat)
-        if ach_key.startswith("bank_"):
-            return games_played
-        
-        # Larcin (larcin_main, larcin_furtif, larcin_pickpocket, larcin_ombre, larcin_maitre)
-        if ach_key.startswith("larcin_"):
-            return games_played
-        
-        return 0
+    
+    # === MAPPING AVEC LES CLÉS EXACTES DE TON JSON ===
+    
+    # Quêtes (quest_bapteme, quest_habitué, quest_veteran, quest_seigneur, quest_legende)
+    if ach_key.startswith("quest_"):
+        return total_quests
+    
+    # Arène (arena_essai, arena_assidu, arena_guerrier, arena_champion, arena_terreur)
+    if ach_key.startswith("arena_"):
+        # Utilise arena_wins de achievement_data
+        return ach_data.get("arena_wins", 0)
+    
+    # PMU (pmu_premier, pmu_averti, pmu_connaisseur, pmu_maitre, pmu_oracle)
+    if ach_key.startswith("pmu_"):
+        return ach_data.get("pmu_wins", 0)
+    
+    # Crime (crime_premier, crime_voyou, crime_criminel, crime_seigneur, crime_fantome)
+    if ach_key.startswith("crime_"):
+        return ach_data.get("crimes_success", 0)
+    
+    # Brinks (vault_premier, vault_apprenti, vault_toubib, vault_virtuose, vault_casse)
+    if ach_key.startswith("vault_"):
+        return ach_data.get("vault_success", 0)
+    
+    # Duel (duel_premier, duel_bretteur, duel_collectionneur, duel_invaincu, duel_dieu)
+    if ach_key.startswith("duel_"):
+        return ach_data.get("duels_won", 0)
+    
+    # Daily (daily_eveil, daily_citoyen, daily_epargnant, daily_pilier, daily_fondateur)
+    if ach_key.startswith("daily_"):
+        # Le streak représente le nombre de daily consécutifs
+        return streak
+    
+    # Taverne (taverne_tournee, taverne_regulier, taverne_trompe, taverne_tonneau, taverne_eponge)
+    if ach_key.startswith("taverne_"):
+        return ach_data.get("beers_drunk", 0)
+    
+    # Banque (bank_premier, bank_poire, bank_gerant, bank_investisseur, bank_magnat)
+    if ach_key.startswith("bank_"):
+        return ach_data.get("bank_deposits", 0)
+    
+    # Larcin (larcin_main, larcin_furtif, larcin_pickpocket, larcin_ombre, larcin_maitre)
+    if ach_key.startswith("larcin_"):
+        return ach_data.get("larcins_success", 0)
+    
+    return 0
 
 
 async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
@@ -1381,20 +1402,36 @@ async def debug_achievement(interaction: discord.Interaction, membre: discord.Me
             inline=False
         )
     
-    # 3. Stats du joueur
+    # 3. Stats du joueur (table achievement_data)
+    ach_data = get_achievement_data(user_id)
+    embed.add_field(
+        name="📊 Données achievement_data",
+        value=f"arena_wins: {ach_data.get('arena_wins', 0)}\n"
+              f"pmu_wins: {ach_data.get('pmu_wins', 0)}\n"
+              f"crimes_success: {ach_data.get('crimes_success', 0)}\n"
+              f"vault_success: {ach_data.get('vault_success', 0)}\n"
+              f"duels_won: {ach_data.get('duels_won', 0)}\n"
+              f"beers_drunk: {ach_data.get('beers_drunk', 0)}\n"
+              f"bank_deposits: {ach_data.get('bank_deposits', 0)}\n"
+              f"larcins_success: {ach_data.get('larcins_success', 0)}",
+        inline=False
+    )
+    
+    # 4. Stats du joueur (table users)
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT games_played, games_won, beers_today FROM users WHERE user_id = ?", (user_id,))
+        cursor.execute("SELECT games_played, games_won, beers_today, streak FROM users WHERE user_id = ?", (user_id,))
         row = cursor.fetchone()
-        
         if row:
             embed.add_field(
-                name="📊 Stats utilisateur",
-                value=f"games_played: {row[0]}\ngames_won: {row[1]}\nbeers_today: {row[2]}",
+                name="📊 Données users",
+                value=f"games_played: {row[0]}\ngames_won: {row[1]}\nbeers_today: {row[2]}\nstreak: {row[3]}",
                 inline=False
             )
-        
-        # 4. Quêtes réclamées
+    
+    # 5. Quêtes réclamées
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM player_quests WHERE user_id = ? AND claimed = 1", (user_id,))
         player_quests = cursor.fetchone()[0] or 0
         cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
@@ -1405,7 +1442,7 @@ async def debug_achievement(interaction: discord.Interaction, membre: discord.Me
             inline=False
         )
     
-    # 5. Achievements déjà débloqués
+    # 6. Achievements déjà débloqués
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT achievement_key FROM user_achievements WHERE user_id = ?", (user_id,))
@@ -1424,28 +1461,25 @@ async def debug_achievement(interaction: discord.Interaction, membre: discord.Me
                 inline=False
             )
     
-    # 6. Tester un achievement spécifique
-    if ACHIEVEMENTS_DEFS:
-        test_key = list(ACHIEVEMENTS_DEFS.keys())[0]
-        test_data = ACHIEVEMENTS_DEFS[test_key]
+    # 7. Tester un achievement spécifique (quest_bapteme)
+    test_key = "quest_bapteme"
+    if test_key in ACHIEVEMENTS_DEFS:
         test_value = evaluate_stat_for_achievement(test_key, user_id)
-        threshold = test_data["thresholds"]["1"]
+        threshold = ACHIEVEMENTS_DEFS[test_key]["thresholds"]["1"]
         embed.add_field(
-            name="🧪 Test premier achievement",
-            value=f"Clé: `{test_key}`\nTitre: {test_data['title']}\nValeur: {test_value}/{threshold}",
+            name="🧪 Test quest_bapteme",
+            value=f"Valeur: {test_value}/{threshold}",
             inline=False
         )
     
-    # 7. Tester un autre achievement (taverne)
-    taverne_keys = [k for k in ACHIEVEMENTS_DEFS.keys() if k.startswith("taverne_")]
-    if taverne_keys:
-        test_key = taverne_keys[0]
-        test_data = ACHIEVEMENTS_DEFS[test_key]
+    # 8. Tester taverne_tournee
+    test_key = "taverne_tournee"
+    if test_key in ACHIEVEMENTS_DEFS:
         test_value = evaluate_stat_for_achievement(test_key, user_id)
-        threshold = test_data["thresholds"]["1"]
+        threshold = ACHIEVEMENTS_DEFS[test_key]["thresholds"]["1"]
         embed.add_field(
-            name="🧪 Test taverne",
-            value=f"Clé: `{test_key}`\nTitre: {test_data['title']}\nValeur: {test_value}/{threshold}",
+            name="🧪 Test taverne_tournee",
+            value=f"Valeur: {test_value}/{threshold}",
             inline=False
         )
     
@@ -1493,7 +1527,9 @@ async def achievement_data(interaction: discord.Interaction, membre: discord.Mem
         "💼 Travail": ["work_done"],
         "🏦 Banque": ["bank_deposits", "bank_withdrawals"],
         "📋 Quêtes": ["quests_completed", "quests_claimed"],
-        "🎯 Jeux spéciaux": ["blackjack_wins", "slots_wins", "roulette_wins", "pfc_wins", "poker_wins", "russian_roulette_survive", "dice_wins", "arena_wins"],
+        "🏟️ Arène": ["arena_fights", "arena_wins"],
+        "🥷 Larcin": ["larcins_success", "larcins_attempts"],
+        "🎯 Jeux spéciaux": ["blackjack_wins", "slots_wins", "roulette_wins", "pfc_wins", "poker_wins", "russian_roulette_survive", "dice_wins"],
     }
     
     for category, field_list in fields.items():
@@ -2218,7 +2254,7 @@ class WithdrawModal(ui.Modal, title="📤 DAB - Retrait de billets"):
                 conn.commit()
 
             invalidate_user_cache(interaction.user.id)
-
+            track_bank_withdrawal(interaction.user.id)
             await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
 
             await interaction.followup.send(
@@ -2831,6 +2867,7 @@ class ArenaFightView(ui.View):
             update_wallet(self.user_id, gain - self.bet)
             update_game_stats(self.user_id, won=True)
             update_quest_progress_v2(self.user_id, "arena_fight", 1)
+            track_arena_fight(self.user_id, won=True)
             track_game_win(self.user_id, "arena")
             await check_and_unlock_achievements(self.user_id, bot_client=bot)
             
@@ -2860,6 +2897,7 @@ class ArenaFightView(ui.View):
                 child.disabled = True
             update_wallet(self.user_id, -self.bet)
             update_game_stats(self.user_id, won=False)
+            track_arena_fight(self.user_id, won=False)
             
             await send_public_log(
                 content=f"💀 **{interaction.user.display_name}** a été vaincu par Bob dans l'arène après {self.round_count} rounds ! (-{format_currency(self.bet)})"
@@ -3247,6 +3285,58 @@ class BrookBookmakerView(ui.View):
 # ==========================================
 # 9. COMMANDES D'ÉCONOMIE, BANQUE & ADMIN
 # ==========================================
+
+def get_user_animation_preference(user_id: int) -> bool:
+    """Récupère la préférence d'animation d'un utilisateur"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT show_animations FROM user_preferences WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        if row:
+            return bool(row[0])
+    return True
+
+def set_user_animation_preference(user_id: int, show: bool):
+    """Définit la préférence d'animation d'un utilisateur"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO user_preferences (user_id, show_animations) VALUES (?, ?)",
+            (user_id, 1 if show else 0)
+        )
+        conn.commit()
+
+def get_user_last_chapter(user_id: int):
+    """Récupère le dernier chapitre et le dernier shop d'un utilisateur"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT last_episode, last_shop_episode FROM user_last_chapter WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        if row:
+            return row[0] or 1, row[1] or 1
+        return 1, 1
+
+def update_user_last_chapter(user_id: int, last_episode: int = None, last_shop_episode: int = None):
+    """Met à jour le dernier chapitre d'un utilisateur"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        if last_episode is not None and last_shop_episode is not None:
+            cursor.execute(
+                "INSERT OR REPLACE INTO user_last_chapter (user_id, last_episode, last_shop_episode) VALUES (?, ?, ?)",
+                (user_id, last_episode, last_shop_episode)
+            )
+        elif last_episode is not None:
+            cursor.execute(
+                "INSERT OR REPLACE INTO user_last_chapter (user_id, last_episode, last_shop_episode) VALUES (?, ?, COALESCE((SELECT last_shop_episode FROM user_last_chapter WHERE user_id = ?), 1))",
+                (user_id, last_episode, user_id)
+            )
+        elif last_shop_episode is not None:
+            cursor.execute(
+                "INSERT OR REPLACE INTO user_last_chapter (user_id, last_episode, last_shop_episode) VALUES (?, COALESCE((SELECT last_episode FROM user_last_chapter WHERE user_id = ?), 1), ?)",
+                (user_id, user_id, last_shop_episode)
+            )
+        conn.commit()
+
 
 @bot.tree.command(name="banque", description="Accéder au Distributeur Automatique de Billets (DAB)")
 async def banque(interaction: discord.Interaction):
@@ -3642,10 +3732,6 @@ async def quetes(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-# ==========================================
-# SUPPRIMER LE DOUBLON - LA COMMANDE achievements EST DÉFINIE UNE SEULE FOIS CI-DESSUS
-# ==========================================
-
 @bot.tree.command(name="work", description="Gagne un peu d'argent en travaillant")
 async def work(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=False)
@@ -3713,6 +3799,7 @@ async def pay(interaction: discord.Interaction, receiver: discord.Member, amount
     update_quest_progress(interaction.user.id, "pay_sent", 1)
     update_quest_progress_v2(interaction.user.id, "pay_sent", 1)
     track_pay_sent(interaction.user.id)
+    track_pay_received(receiver.id)
     
     await send_public_log(
         content=f"💸 **{interaction.user.display_name}** a envoyé **{format_currency(amount)}** à {receiver.display_name} !"
@@ -4126,8 +4213,7 @@ class BlackjackGame:
     @staticmethod
     def calculate_score(hand):
         score = 0
-        aces = 0
-        for card in hand:
+        aces = 0        for card in hand:
             r = card["rank"]
             if r in ["J", "Q", "K"]:
                 score += 10
