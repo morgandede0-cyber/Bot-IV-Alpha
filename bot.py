@@ -8,7 +8,6 @@ import sqlite3
 import traceback
 import json
 import aiohttp
-import redis
 import discord
 from discord import app_commands, ui
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -37,19 +36,29 @@ cooldowns = {}
 TEST_MODE_ENABLED = False
 
 # ==========================================
-# REDIS CONNECTION
+# REDIS CONNECTION (Optionnel)
 # ==========================================
+
+try:
+    import redis
+    REDIS_INSTALLED = True
+except ImportError:
+    REDIS_INSTALLED = False
+    print("⚠️ Redis non installé, utilisation du cache mémoire")
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 REDIS_AVAILABLE = False
 
-try:
-    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-    redis_client.ping()
-    REDIS_AVAILABLE = True
-    print("✅ Redis connecté avec succès !")
-except Exception as e:
-    print(f"⚠️ Redis non disponible: {e}, utilisation du cache mémoire")
+if REDIS_INSTALLED:
+    try:
+        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+        redis_client.ping()
+        REDIS_AVAILABLE = True
+        print("✅ Redis connecté avec succès !")
+    except Exception as e:
+        print(f"⚠️ Redis non disponible: {e}, utilisation du cache mémoire")
+        redis_client = None
+else:
     redis_client = None
 
 
@@ -142,7 +151,7 @@ def init_db():
             )
         """)
         
-        # ========== NOUVELLES TABLES POUR LES QUÊTES ==========
+        # ========== TABLES POUR LES QUÊTES ==========
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS public_quests (
                 quest_date TEXT PRIMARY KEY,
@@ -171,7 +180,6 @@ def init_db():
             )
         """)
         
-        # Ancienne table des quêtes (gardée pour compatibilité)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS daily_quests (
                 user_id INTEGER,
@@ -193,43 +201,6 @@ def init_db():
                 tier INTEGER DEFAULT 1,
                 unlocked_at TEXT,
                 PRIMARY KEY (user_id, achievement_key)
-            )
-        """)
-
-        # ========== NOUVELLE TABLE POUR LES DONNEES D'ACHIEVEMENTS ==========
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS achievement_data (
-                user_id INTEGER PRIMARY KEY,
-                games_played INTEGER DEFAULT 0,
-                games_won INTEGER DEFAULT 0,
-                games_lost INTEGER DEFAULT 0,
-                beers_drunk INTEGER DEFAULT 0,
-                crimes_success INTEGER DEFAULT 0,
-                crimes_attempts INTEGER DEFAULT 0,
-                vault_attempts INTEGER DEFAULT 0,
-                vault_success INTEGER DEFAULT 0,
-                pmu_wins INTEGER DEFAULT 0,
-                pmu_bets INTEGER DEFAULT 0,
-                duels_played INTEGER DEFAULT 0,
-                duels_won INTEGER DEFAULT 0,
-                work_done INTEGER DEFAULT 0,
-                bank_deposits INTEGER DEFAULT 0,
-                bank_withdrawals INTEGER DEFAULT 0,
-                pay_sent INTEGER DEFAULT 0,
-                pay_received INTEGER DEFAULT 0,
-                quests_completed INTEGER DEFAULT 0,
-                quests_claimed INTEGER DEFAULT 0,
-                blackjack_wins INTEGER DEFAULT 0,
-                slots_wins INTEGER DEFAULT 0,
-                roulette_wins INTEGER DEFAULT 0,
-                pfc_wins INTEGER DEFAULT 0,
-                poker_wins INTEGER DEFAULT 0,
-                russian_roulette_survive INTEGER DEFAULT 0,
-                dice_wins INTEGER DEFAULT 0,
-                arena_fights INTEGER DEFAULT 0,
-                arena_wins INTEGER DEFAULT 0,
-                larcins_success INTEGER DEFAULT 0,
-                last_updated TEXT DEFAULT ''
             )
         """)
 
@@ -365,301 +336,7 @@ def init_db():
 
 
 # ==========================================
-# 3.1. SYSTEME DE DONNEES POUR ACHIEVEMENTS
-# ==========================================
-
-def init_achievement_data(user_id: int):
-    """Initialise les données d'achievement pour un joueur"""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR IGNORE INTO achievement_data (user_id, last_updated)
-            VALUES (?, ?)
-        """, (user_id, datetime.datetime.now().isoformat()))
-        conn.commit()
-
-def get_achievement_data(user_id: int) -> dict:
-    """Récupère toutes les données d'achievement d'un joueur"""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM achievement_data WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        
-        if row is None:
-            init_achievement_data(user_id)
-            return get_achievement_data(user_id)
-        
-        columns = [desc[0] for desc in cursor.description]
-        return dict(zip(columns, row))
-
-def increment_achievement_data(user_id: int, **kwargs):
-    """Incrémente les données d'achievement d'un joueur"""
-    # Filtrer les valeurs positives
-    increments = {k: v for k, v in kwargs.items() if isinstance(v, int) and v > 0}
-    if not increments:
-        return
-    
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        
-        # S'assurer que l'utilisateur existe
-        cursor.execute("INSERT OR IGNORE INTO achievement_data (user_id) VALUES (?)", (user_id,))
-        
-        # Construire la requête d'incrémentation
-        set_clause = ", ".join([f"{key} = COALESCE({key}, 0) + ?" for key in increments])
-        values = list(increments.values()) + [datetime.datetime.now().isoformat(), user_id]
-        
-        cursor.execute(f"""
-            UPDATE achievement_data 
-            SET {set_clause}, last_updated = ?
-            WHERE user_id = ?
-        """, values)
-        
-        conn.commit()
-
-def get_achievement_value(user_id: int, field: str) -> int:
-    """Récupère une valeur spécifique des données d'achievement"""
-    data = get_achievement_data(user_id)
-    return data.get(field, 0)
-
-
-# ==========================================
-# 3.2. FONCTIONS DE TRACKING POUR ACHIEVEMENTS
-# ==========================================
-
-def track_game_played(user_id: int, won: bool = False, lost: bool = False):
-    """Track une partie jouée"""
-    increments = {"games_played": 1}
-    if won:
-        increments["games_won"] = 1
-    if lost:
-        increments["games_lost"] = 1
-    increment_achievement_data(user_id, **increments)
-
-def track_beer(user_id: int):
-    """Track une pinte bue"""
-    increment_achievement_data(user_id, beers_drunk=1)
-
-def track_crime(user_id: int, success: bool = False):
-    """Track un crime"""
-    increments = {"crimes_attempts": 1}
-    if success:
-        increments["crimes_success"] = 1
-    increment_achievement_data(user_id, **increments)
-
-def track_vault(user_id: int, success: bool = False):
-    """Track un braquage de la Brinks"""
-    increments = {"vault_attempts": 1}
-    if success:
-        increments["vault_success"] = 1
-    increment_achievement_data(user_id, **increments)
-
-def track_pmu(user_id: int, won: bool = False):
-    """Track un pari PMU"""
-    increments = {"pmu_bets": 1}
-    if won:
-        increments["pmu_wins"] = 1
-    increment_achievement_data(user_id, **increments)
-
-def track_duel(user_id: int, won: bool = False):
-    """Track un duel"""
-    increments = {"duels_played": 1}
-    if won:
-        increments["duels_won"] = 1
-    increment_achievement_data(user_id, **increments)
-
-def track_work(user_id: int):
-    """Track un travail"""
-    increment_achievement_data(user_id, work_done=1)
-
-def track_bank_deposit(user_id: int):
-    """Track un dépôt bancaire"""
-    increment_achievement_data(user_id, bank_deposits=1)
-
-def track_pay_sent(user_id: int):
-    """Track un envoi d'argent"""
-    increment_achievement_data(user_id, pay_sent=1)
-
-def track_quest_claimed(user_id: int):
-    """Track une quête réclamée"""
-    increment_achievement_data(user_id, quests_claimed=1)
-
-def track_game_win(user_id: int, game_type: str):
-    """Track une victoire à un jeu spécifique"""
-    game_mapping = {
-        "blackjack": "blackjack_wins",
-        "slots": "slots_wins",
-        "roulette": "roulette_wins",
-        "pfc": "pfc_wins",
-        "poker": "poker_wins",
-        "russian_roulette": "russian_roulette_survive",
-        "dice": "dice_wins",
-        "arena": "arena_wins",
-    }
-    field = game_mapping.get(game_type)
-    if field:
-        increment_achievement_data(user_id, **{field: 1})
-
-def track_larcin(user_id: int, success: bool = False):
-    """Track un larcin"""
-    if success:
-        increment_achievement_data(user_id, larcins_success=1)
-
-
-# ==========================================
-# 3.3. FONCTIONS REDIS (adaptées)
-# ==========================================
-
-def invalidate_user_cache(user_id: int):
-    """Invalide le cache Redis d'un utilisateur"""
-    if REDIS_AVAILABLE and redis_client:
-        redis_client.delete(f"user:{user_id}")
-        redis_client.delete(f"user:{user_id}:wallet")
-        redis_client.delete(f"user:{user_id}:bank")
-
-def invalidate_leaderboard():
-    """Invalide le classement en cache"""
-    if REDIS_AVAILABLE and redis_client:
-        redis_client.delete("leaderboard:top10")
-
-def get_user_cached(user_id: int):
-    """Récupère un utilisateur avec cache Redis"""
-    if not REDIS_AVAILABLE or not redis_client:
-        return get_user(user_id)
-    
-    cache_key = f"user:{user_id}"
-    cached = redis_client.get(cache_key)
-    
-    if cached:
-        try:
-            data = json.loads(cached)
-            return (
-                data.get("wallet", 0),
-                data.get("bank", 0),
-                data.get("last_daily", 0),
-                data.get("streak", 0),
-                data.get("beers_today", 0),
-                data.get("last_beer_date", ""),
-                data.get("games_played", 0),
-                data.get("games_won", 0),
-                data.get("games_lost", 0)
-            )
-        except:
-            pass
-    
-    # Récupérer depuis SQL
-    data = get_user(user_id)
-    
-    # Mettre en cache (5 minutes)
-    cache_data = {
-        "wallet": data[0],
-        "bank": data[1],
-        "last_daily": data[2],
-        "streak": data[3],
-        "beers_today": data[4],
-        "last_beer_date": data[5],
-        "games_played": data[6],
-        "games_won": data[7],
-        "games_lost": data[8]
-    }
-    if REDIS_AVAILABLE and redis_client:
-        redis_client.setex(cache_key, 300, json.dumps(cache_data))
-    
-    return data
-
-def check_cooldown_redis(user_id: int, command_name: str, duration: int) -> int:
-    """Vérifie un cooldown avec Redis ou fallback mémoire"""
-    if TEST_MODE_ENABLED:
-        return 0
-    
-    if REDIS_AVAILABLE and redis_client:
-        key = f"cooldown:{user_id}:{command_name}"
-        ttl = redis_client.ttl(key)
-        
-        if ttl > 0:
-            return ttl
-        
-        redis_client.setex(key, duration, "1")
-        return 0
-    
-    # Fallback sur l'ancien système
-    now = int(time.time())
-    key = (user_id, command_name)
-    expire = cooldowns.get(key, 0)
-    if now < expire:
-        return expire - now
-    cooldowns[key] = now + duration
-    return 0
-
-def clear_cooldown_redis(user_id: int, command_name: str = None):
-    """Supprime un cooldown Redis"""
-    if REDIS_AVAILABLE and redis_client:
-        if command_name:
-            redis_client.delete(f"cooldown:{user_id}:{command_name}")
-        else:
-            keys = redis_client.keys(f"cooldown:{user_id}:*")
-            if keys:
-                redis_client.delete(*keys)
-    else:
-        # Fallback sur l'ancien système
-        if command_name:
-            cooldowns.pop((user_id, command_name), None)
-        else:
-            keys_to_remove = [k for k in cooldowns if k[0] == user_id]
-            for k in keys_to_remove:
-                cooldowns.pop(k, None)
-
-def update_leaderboard(user_id: int, score: int):
-    """Met à jour le classement des richesses dans Redis"""
-    if REDIS_AVAILABLE and redis_client:
-        redis_client.zadd("leaderboard:richest", {str(user_id): score})
-
-def get_top_10_richest():
-    """Récupère le top 10 des plus riches depuis Redis"""
-    if REDIS_AVAILABLE and redis_client:
-        return redis_client.zrevrange("leaderboard:richest", 0, 9, withscores=True)
-    return None
-
-def get_user_rank(user_id: int):
-    """Récupère le rang d'un utilisateur"""
-    if REDIS_AVAILABLE and redis_client:
-        rank = redis_client.zrevrank("leaderboard:richest", str(user_id))
-        return rank + 1 if rank is not None else None
-    return None
-
-def check_rate_limit(user_id: int, action: str, max_requests: int = 5, window: int = 60) -> bool:
-    """Vérifie le rate limiting avec Redis"""
-    if TEST_MODE_ENABLED:
-        return True
-    
-    if not REDIS_AVAILABLE or not redis_client:
-        return True
-    
-    key = f"rate:{user_id}:{action}"
-    count = redis_client.incr(key)
-    
-    if count == 1:
-        redis_client.expire(key, window)
-    
-    return count <= max_requests
-
-def get_redis_stats():
-    """Récupère les statistiques Redis"""
-    if not REDIS_AVAILABLE or not redis_client:
-        return None
-    
-    try:
-        return {
-            "keys": len(redis_client.keys("*")),
-            "memory": redis_client.info("memory")["used_memory_human"],
-            "uptime": redis_client.info("server")["uptime_in_seconds"]
-        }
-    except:
-        return None
-
-
-# ==========================================
-# 3.4. FONCTIONS UTILITAIRES
+# 3.1. FONCTIONS UTILITAIRES
 # ==========================================
 
 def get_user(user_id: int):
@@ -701,13 +378,10 @@ def update_wallet(user_id: int, amount: int):
         )
         conn.commit()
     
-    # Invalider le cache Redis
-    invalidate_user_cache(user_id)
-    
-    # Mettre à jour le leaderboard
     if REDIS_AVAILABLE and redis_client:
-        wallet, bank, _, _, _, _, _, _, _ = get_user_cached(user_id)
-        update_leaderboard(user_id, wallet + bank)
+        redis_client.delete(f"user:{user_id}")
+        wallet, bank, _, _, _, _, _, _, _ = get_user(user_id)
+        redis_client.zadd("leaderboard:richest", {str(user_id): wallet + bank})
     
     if amount > 0:
         update_quest_progress(user_id, "money_earned", amount)
@@ -726,11 +400,8 @@ def update_game_stats(user_id: int, won: bool):
             cursor.execute("UPDATE users SET games_played = COALESCE(games_played, 0) + 1, games_lost = COALESCE(games_lost, 0) + 1 WHERE user_id = ?", (user_id,))
         conn.commit()
     
-    # Invalider le cache Redis
-    invalidate_user_cache(user_id)
-    
-    # Tracker les données d'achievement
-    track_game_played(user_id, won=won, lost=not won)
+    if REDIS_AVAILABLE and redis_client:
+        redis_client.delete(f"user:{user_id}")
     
     update_quest_progress(user_id, "games_played", 1)
     update_quest_progress_v2(user_id, "games_played", 1)
@@ -745,11 +416,76 @@ def format_currency(amount: int) -> str:
     return f"{amount:,} $".replace(",", " ")
 
 
+def check_cooldown(user_id: int, command_name: str, duration: int) -> int:
+    if TEST_MODE_ENABLED:
+        return 0
+    
+    if REDIS_AVAILABLE and redis_client:
+        key = f"cooldown:{user_id}:{command_name}"
+        ttl = redis_client.ttl(key)
+        if ttl > 0:
+            return ttl
+        redis_client.setex(key, duration, "1")
+        return 0
+    
+    now = int(time.time())
+    key = (user_id, command_name)
+    expire = cooldowns.get(key, 0)
+    if now < expire:
+        return expire - now
+    cooldowns[key] = now + duration
+    return 0
+
+
+def clear_cooldown(user_id: int, command_name: str = None):
+    if REDIS_AVAILABLE and redis_client:
+        if command_name:
+            redis_client.delete(f"cooldown:{user_id}:{command_name}")
+        else:
+            keys = redis_client.keys(f"cooldown:{user_id}:*")
+            if keys:
+                redis_client.delete(*keys)
+    else:
+        if command_name:
+            cooldowns.pop((user_id, command_name), None)
+        else:
+            keys_to_remove = [k for k in cooldowns if k[0] == user_id]
+            for k in keys_to_remove:
+                cooldowns.pop(k, None)
+
+
+async def validate_game_bet(
+    interaction: discord.Interaction, command_name: str, bet: int, cooldown_sec: int = 3600
+) -> bool:
+    async def reject(message: str):
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
+    if bet <= 0:
+        await reject("❌ La mise doit être supérieure à 0 $ !")
+        return False
+    if bet > MAX_BET:
+        await reject(f"❌ La mise maximale autorisée est de **{MAX_BET} $** !")
+        return False
+    wallet = get_user(interaction.user.id)[0]
+    if wallet < bet:
+        await reject("❌ Solde insuffisant dans ton portefeuille ! Pense à retirer de l'argent via /banque.")
+        return False
+    retry_after = check_cooldown(interaction.user.id, command_name, cooldown_sec)
+    if retry_after > 0:
+        minutes, seconds = divmod(retry_after, 60)
+        await reject(f"⏳ Tu dois attendre **{minutes} min et {seconds} sec** avant de pouvoir rejouer.")
+        return False
+    return True
+
+
 init_db()
 
 
 # ==========================================
-# 3.5. SYSTÈME DE QUÊTES PUBLIC
+# 4. SYSTÈME DE QUÊTES PUBLIC
 # ==========================================
 
 QUEST_POOL = [
@@ -924,9 +660,6 @@ def claim_all_public_quests(user_id: int):
     conn.close()
     
     update_wallet(user_id, total_reward)
-    
-    # Tracker les données d'achievement
-    track_quest_claimed(user_id)
     asyncio.create_task(check_and_unlock_achievements(user_id, bot))
     
     return {
@@ -946,7 +679,7 @@ def _today_str() -> str:
 
 
 # ==========================================
-# 3.6. ANCIEN SYSTÈME DE QUÊTES
+# 5. ANCIEN SYSTÈME DE QUÊTES
 # ==========================================
 
 QUEST_STREAK_MULT_STEP = 0.15
@@ -1098,9 +831,6 @@ def claim_all_daily_quests(user_id: int):
         conn.commit()
 
     update_wallet(user_id, total_reward)
-    
-    # Tracker les données d'achievement
-    track_quest_claimed(user_id)
     asyncio.create_task(check_and_unlock_achievements(user_id, bot))
 
     return {
@@ -1112,7 +842,7 @@ def claim_all_daily_quests(user_id: int):
 
 
 # ==========================================
-# 3.7. SYSTÈME DES ACHIEVEMENTS (NOUVEAU)
+# 6. SYSTÈME DES ACHIEVEMENTS (STYLE MEE6 - SIMPLIFIÉ)
 # ==========================================
 
 TIERS_NAMES = {1: "Bronze"}
@@ -1127,15 +857,97 @@ GITHUB_ACHIEVEMENTS_URL = "https://raw.githubusercontent.com/morgandede0-cyber/B
 async def load_achievements_from_github():
     global ACHIEVEMENTS_DEFS, ACHIEVEMENTS_LOADED
     
+    # TES achievements (fallback)
     FALLBACK_ACHIEVEMENTS = {
-        "1": {
-            "key": "games_master",
-            "title": "Maître des Jeux",
-            "desc": "Gagner des parties dans les jeux de casino.",
+        "quest_bapteme": {
+            "key": "quest_bapteme",
+            "title": "Baptême du Feu",
+            "desc": "Déclencher sa toute première quête journalière.",
             "thresholds": {"1": 1},
-            "rewards": {"1": 200},
-            "category": "Jeux",
+            "rewards": {"1": 100},
+            "category": "Quêtes",
             "tier": "Commun"
+        },
+        "quest_habitué": {
+            "key": "quest_habitué",
+            "title": "Habitué des Missions",
+            "desc": "Valider un total de 10 quêtes journalières.",
+            "thresholds": {"1": 10},
+            "rewards": {"1": 200},
+            "category": "Quêtes",
+            "tier": "Rare"
+        },
+        "quest_veteran": {
+            "key": "quest_veteran",
+            "title": "Vétéran des Commandes",
+            "desc": "Compléter 50 quêtes journalières avec succès.",
+            "thresholds": {"1": 50},
+            "rewards": {"1": 500},
+            "category": "Quêtes",
+            "tier": "Épique"
+        },
+        "quest_seigneur": {
+            "key": "quest_seigneur",
+            "title": "Seigneur des Chroniques",
+            "desc": "Venir à bout de 150 quêtes journalières.",
+            "thresholds": {"1": 150},
+            "rewards": {"1": 1000},
+            "category": "Quêtes",
+            "tier": "Mythique"
+        },
+        "quest_legende": {
+            "key": "quest_legende",
+            "title": "Légende de l'Aventure",
+            "desc": "Atteindre le palier ultime de 500 quêtes journalières.",
+            "thresholds": {"1": 500},
+            "rewards": {"1": 2500},
+            "category": "Quêtes",
+            "tier": "Légendaire"
+        },
+        "arena_essai": {
+            "key": "arena_essai",
+            "title": "Coup d'Essai",
+            "desc": "Effectuer son premier combat d'entraînement dans l'arène.",
+            "thresholds": {"1": 1},
+            "rewards": {"1": 100},
+            "category": "Arène",
+            "tier": "Commun"
+        },
+        "arena_assidu": {
+            "key": "arena_assidu",
+            "title": "Combattant Assidu",
+            "desc": "Disputer 10 duels d'entraînement dans l'arène.",
+            "thresholds": {"1": 10},
+            "rewards": {"1": 200},
+            "category": "Arène",
+            "tier": "Rare"
+        },
+        "arena_guerrier": {
+            "key": "arena_guerrier",
+            "title": "Guerrier de l'Arène",
+            "desc": "Remporter 25 combats face au maître d'arme.",
+            "thresholds": {"1": 25},
+            "rewards": {"1": 500},
+            "category": "Arène",
+            "tier": "Épique"
+        },
+        "arena_champion": {
+            "key": "arena_champion",
+            "title": "Champion des Lices",
+            "desc": "Triompher lors de 75 affrontements dans l'arène.",
+            "thresholds": {"1": 75},
+            "rewards": {"1": 1000},
+            "category": "Arène",
+            "tier": "Mythique"
+        },
+        "arena_terreur": {
+            "key": "arena_terreur",
+            "title": "Terreur des Gladiateurs",
+            "desc": "Dominer l'arène en décrochant 200 victoires.",
+            "thresholds": {"1": 200},
+            "rewards": {"1": 2500},
+            "category": "Arène",
+            "tier": "Légendaire"
         }
     }
     
@@ -1166,93 +978,84 @@ async def load_achievements_from_github():
         return False
 
 
-def evaluate_stat_for_achievement(ach_id: str, user_id: int) -> int:
-    """Évalue la progression d'un joueur pour un achievement par son ID"""
-    data = get_achievement_data(user_id)
-    
-    try:
-        ach_num = int(ach_id)
-    except ValueError:
+def evaluate_stat_for_achievement(ach_key: str, user_id: int) -> int:
+    """Évalue la progression d'un joueur pour un achievement - Style MEE6"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Récupérer toutes les stats du joueur en une seule requête
+        cursor.execute("""
+            SELECT 
+                games_played, games_won, games_lost,
+                beers_today, wallet, bank
+            FROM users WHERE user_id = ?
+        """, (user_id,))
+        
+        row = cursor.fetchone()
+        if not row:
+            return 0
+        
+        games_played, games_won, games_lost, beers_today, wallet, bank = row
+        games_played = games_played or 0
+        games_won = games_won or 0
+        beers_today = beers_today or 0
+        wallet = wallet or 0
+        bank = bank or 0
+        
+        # Compter les quêtes réclamées
+        cursor.execute("SELECT COUNT(*) FROM player_quests WHERE user_id = ? AND claimed = 1", (user_id,))
+        player_quests = cursor.fetchone()[0] or 0
+        cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
+        daily_quests = cursor.fetchone()[0] or 0
+        total_quests = player_quests + daily_quests
+        
+        # === MAPPING DES ACHIEVEMENTS ===
+        
+        # Quêtes (quest_*)
+        if ach_key.startswith("quest_"):
+            return total_quests
+        
+        # Arène (arena_*)
+        if ach_key.startswith("arena_"):
+            if "essai" in ach_key or "assidu" in ach_key:
+                return games_played
+            return games_won
+        
+        # PMU (pmu_*) - utilise games_won comme proxy
+        if ach_key.startswith("pmu_"):
+            return games_won
+        
+        # Crime (crime_*) - utilise games_played comme proxy
+        if ach_key.startswith("crime_"):
+            return games_played
+        
+        # Brinks (vault_*) - utilise games_played comme proxy
+        if ach_key.startswith("vault_"):
+            return games_played
+        
+        # Duel (duel_*)
+        if ach_key.startswith("duel_"):
+            if "premier" in ach_key or "bretteur" in ach_key:
+                return games_played
+            return games_won
+        
+        # Daily (daily_*)
+        if ach_key.startswith("daily_"):
+            return total_quests
+        
+        # Taverne (taverne_*)
+        if ach_key.startswith("taverne_"):
+            return beers_today
+        
+        # Banque (bank_*) - utilise games_played comme proxy
+        if ach_key.startswith("bank_"):
+            return games_played
+        
+        # Larcin (larcin_*) - utilise games_played comme proxy
+        if ach_key.startswith("larcin_"):
+            return games_played
+        
         return 0
-    
-    # Mapping des IDs vers les champs de données
-    mapping = {
-        # Quêtes (1-5)
-        1: "quests_claimed",
-        2: "quests_claimed",
-        3: "quests_claimed",
-        4: "quests_claimed",
-        5: "quests_claimed",
-        
-        # Arène (6-10)
-        6: "games_played",
-        7: "games_played",
-        8: "games_won",
-        9: "games_won",
-        10: "games_won",
-        
-        # PMU (11-15)
-        11: "pmu_wins",
-        12: "pmu_wins",
-        13: "pmu_wins",
-        14: "pmu_wins",
-        15: "pmu_wins",
-        
-        # Crime (16-20)
-        16: "crimes_success",
-        17: "crimes_success",
-        18: "crimes_success",
-        19: "crimes_success",
-        20: "crimes_success",
-        
-        # Brinks (21-25)
-        21: "vault_attempts",
-        22: "vault_attempts",
-        23: "vault_attempts",
-        24: "vault_attempts",
-        25: "vault_attempts",
-        
-        # Duel (26-30)
-        26: "duels_played",
-        27: "duels_played",
-        28: "duels_won",
-        29: "duels_won",
-        30: "duels_won",
-        
-        # Daily (31-35)
-        31: "quests_claimed",
-        32: "quests_claimed",
-        33: "quests_claimed",
-        34: "quests_claimed",
-        35: "quests_claimed",
-        
-        # Taverne (36-40)
-        36: "beers_drunk",
-        37: "beers_drunk",
-        38: "beers_drunk",
-        39: "beers_drunk",
-        40: "beers_drunk",
-        
-        # Banque (41-45)
-        41: "bank_deposits",
-        42: "bank_deposits",
-        43: "bank_deposits",
-        44: "bank_deposits",
-        45: "bank_deposits",
-        
-        # Larcin (46-50)
-        46: "larcins_success",
-        47: "larcins_success",
-        48: "larcins_success",
-        49: "larcins_success",
-        50: "larcins_success",
-    }
-    
-    field = mapping.get(ach_num)
-    if field:
-        return data.get(field, 0)
-    
-    return 0
 
 
 async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
@@ -1262,7 +1065,6 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
         await load_achievements_from_github()
     
     if not ACHIEVEMENTS_DEFS:
-        print("⚠️ Aucun succès chargé")
         return []
     
     today = time.strftime("%Y-%m-%d")
@@ -1270,20 +1072,17 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
 
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT achievement_key, tier FROM user_achievements WHERE user_id = ?", (user_id,))
-        user_tiers = {row[0]: row[1] for row in cursor.fetchall()}
+        cursor.execute("SELECT achievement_key FROM user_achievements WHERE user_id = ?", (user_id,))
+        unlocked_keys = {row[0] for row in cursor.fetchall()}
 
-    for ach_id, data in ACHIEVEMENTS_DEFS.items():
-        ach_key = data.get("key", ach_id)
-        
-        if ach_key in user_tiers:
+    for ach_key, data in ACHIEVEMENTS_DEFS.items():
+        if ach_key in unlocked_keys:
             continue
 
-        current_stat = evaluate_stat_for_achievement(ach_id, user_id)
+        current_stat = evaluate_stat_for_achievement(ach_key, user_id)
         threshold = data["thresholds"]["1"]
         
         if current_stat >= threshold:
-            target_tier = 1
             reward_sum = data["rewards"]["1"]
             
             update_wallet(user_id, reward_sum)
@@ -1291,48 +1090,34 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "INSERT INTO user_achievements (user_id, achievement_key, tier, unlocked_at) VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(user_id, achievement_key) DO UPDATE SET tier = ?, unlocked_at = ?",
-                    (user_id, ach_key, target_tier, today, target_tier, today)
+                    "INSERT INTO user_achievements (user_id, achievement_key, tier, unlocked_at) VALUES (?, ?, ?, ?)",
+                    (user_id, ach_key, 1, today)
                 )
                 conn.commit()
 
             unlocked_now.append({
                 "key": ach_key,
                 "title": data["title"],
-                "tier": target_tier,
-                "tier_name": TIERS_NAMES.get(target_tier, "Bronze"),
                 "reward": reward_sum
             })
 
+            # Notification dans le salon B
             if bot_client:
                 try:
-                    with get_db_connection() as db_conn:
-                        cur = db_conn.cursor()
-                        cur.execute("SELECT channel_id FROM ai_channels WHERE ai_type = ?", ("achievements",))
-                        ch_row = cur.fetchone()
-                        if ch_row:
-                            target_channel = bot_client.get_channel(ch_row[0])
-                            if target_channel:
-                                user_obj = bot_client.get_user(user_id)
-                                user_mention = user_obj.mention if user_obj else f"<@{user_id}>"
-                                
-                                member_obj = target_channel.guild.get_member(user_id) if target_channel.guild else None
-                                if member_obj:
-                                    with get_db_connection() as db_conn2:
-                                        cur2 = db_conn2.cursor()
-                                        cur2.execute("SELECT achievement_key, tier FROM user_achievements WHERE user_id = ?", (user_id,))
-                                        all_unlocked = {row[0]: row[1] for row in cur2.fetchall()}
-                                    
-                                    img_buf = await generate_mee6_profile_card(member_obj, all_unlocked)
-                                    file = discord.File(fp=img_buf, filename="achievement.png")
-                                    content = f"GG {user_mention}, tu as débloqué le succès **{data['title']}** ! 🎉"
-                                    bot.loop.create_task(target_channel.send(content=content, file=file))
+                    channel = bot_client.get_channel(PUBLIC_LOG_CHANNEL_ID)
+                    if channel:
+                        user = bot_client.get_user(user_id)
+                        mention = user.mention if user else f"<@{user_id}>"
+                        await channel.send(f"🎉 {mention} a débloqué le succès **{data['title']}** ! (+{format_currency(reward_sum)})")
                 except Exception as e:
-                    print(f"❌ Erreur notification succès : {e}")
+                    print(f"❌ Erreur notification: {e}")
 
     return unlocked_now
 
+
+# ==========================================
+# 7. COMMANDES D'ACHIEVEMENTS AVEC TESTS
+# ==========================================
 
 @bot.tree.command(name="reload-achievements", description="[ADMIN] Recharge la liste des succès depuis GitHub")
 @app_commands.checks.has_permissions(administrator=True)
@@ -1370,10 +1155,10 @@ async def achievements_list(interaction: discord.Interaction):
     )
     
     descriptions = []
-    for ach_id, data in ACHIEVEMENTS_DEFS.items():
+    for ach_key, data in ACHIEVEMENTS_DEFS.items():
         threshold = data["thresholds"]["1"]
         reward = data["rewards"]["1"]
-        descriptions.append(f"`#{ach_id}` **{data['title']}** - {data['desc']} (Seuil: {threshold}, Récompense: {reward}$)")
+        descriptions.append(f"**{data['title']}** - {data['desc']} (Seuil: {threshold}, Récompense: {reward}$)")
     
     embed.description = "\n".join(descriptions[:20])
     if len(descriptions) > 20:
@@ -1384,17 +1169,104 @@ async def achievements_list(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="check-achievements", description="[ADMIN] Force la vérification des succès pour un joueur")
+@bot.tree.command(name="achievements", description="Affiche tes succès et trophées sous forme de carte graphique")
+async def achievements(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    user_id = interaction.user.id
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT achievement_key, tier FROM user_achievements WHERE user_id = ?", (user_id,))
+        unlocked = {row[0]: row[1] for row in cursor.fetchall()}
+
+    img_buf = await generate_mee6_profile_card(interaction.user, unlocked)
+    file = discord.File(fp=img_buf, filename="achievements_profile.png")
+
+    view = AchievementProfileView(interaction.user, unlocked)
+    await interaction.followup.send(file=file, view=view, ephemeral=True)
+
+
+@bot.tree.command(name="test-achievements", description="[ADMIN] Test complet des achievements")
 @app_commands.checks.has_permissions(administrator=True)
-async def check_achievements(interaction: discord.Interaction, membre: discord.Member = None):
+async def test_achievements(interaction: discord.Interaction, membre: discord.Member):
     await interaction.response.defer(ephemeral=True)
     
-    target_id = membre.id if membre else interaction.user.id
-    unlocked = await check_and_unlock_achievements(target_id, bot)
+    embed = discord.Embed(
+        title=f"🔍 Test Achievements - {membre.display_name}",
+        color=discord.Color.blue()
+    )
+    
+    # 1. Vérifier le chargement
+    embed.add_field(
+        name="📊 Chargement",
+        value=f"Achievements chargés: {len(ACHIEVEMENTS_DEFS)}\nACHIEVEMENTS_LOADED: {ACHIEVEMENTS_LOADED}",
+        inline=False
+    )
+    
+    # 2. Stats du joueur
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT games_played, games_won, beers_today, wallet, bank FROM users WHERE user_id = ?", (membre.id,))
+        row = cursor.fetchone()
+        
+        if row:
+            games_played, games_won, beers_today, wallet, bank = row
+            embed.add_field(
+                name="📊 Stats du joueur",
+                value=f"Parties jouées: **{games_played}**\nParties gagnées: **{games_won}**\nBières: **{beers_today}**\nWallet: **{format_currency(wallet)}**\nBank: **{format_currency(bank)}**",
+                inline=False
+            )
+        
+        # Quêtes réclamées
+        cursor.execute("SELECT COUNT(*) FROM player_quests WHERE user_id = ? AND claimed = 1", (membre.id,))
+        player_quests = cursor.fetchone()[0] or 0
+        cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (membre.id,))
+        daily_quests = cursor.fetchone()[0] or 0
+        embed.add_field(
+            name="📋 Quêtes réclamées",
+            value=f"Player_quests: **{player_quests}**\nDaily_quests: **{daily_quests}**\nTotal: **{player_quests + daily_quests}**",
+            inline=False
+        )
+    
+    # 3. Achievements débloqués
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT achievement_key FROM user_achievements WHERE user_id = ?", (membre.id,))
+        unlocked = cursor.fetchall()
+        
+        if unlocked:
+            embed.add_field(
+                name="🏆 Débloqués",
+                value="\n".join([f"✅ {row[0]}" for row in unlocked[:10]]),
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="🏆 Débloqués",
+                value="❌ Aucun",
+                inline=False
+            )
+    
+    # 4. Forcer la vérification
+    embed.add_field(
+        name="🔄 Action",
+        value=f"Exécute `/force-check @{membre.display_name}` pour forcer la vérification",
+        inline=False
+    )
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="force-check", description="[ADMIN] Force la vérification des achievements")
+@app_commands.checks.has_permissions(administrator=True)
+async def force_check(interaction: discord.Interaction, membre: discord.Member):
+    await interaction.response.defer(ephemeral=True)
+    
+    unlocked = await check_and_unlock_achievements(membre.id, bot)
     
     if unlocked:
         embed = discord.Embed(
-            title="✅ Succès vérifiés",
+            title="✅ Achievements vérifiés",
             description=f"{len(unlocked)} nouveau(x) succès débloqué(s) !",
             color=discord.Color.green()
         )
@@ -1407,54 +1279,14 @@ async def check_achievements(interaction: discord.Interaction, membre: discord.M
     else:
         embed = discord.Embed(
             title="ℹ️ Aucun succès débloqué",
-            description="Le joueur n'a pas atteint les conditions pour débloquer de nouveaux succès.",
+            description="Le joueur n'a pas atteint les conditions.",
             color=discord.Color.blue()
         )
     
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="achievement-data", description="Affiche les données d'achievement d'un joueur")
-async def achievement_data(interaction: discord.Interaction, membre: discord.Member = None):
-    await interaction.response.defer(ephemeral=True)
-    
-    target = membre or interaction.user
-    data = get_achievement_data(target.id)
-    
-    embed = discord.Embed(
-        title=f"📊 Données d'achievement - {target.display_name}",
-        color=discord.Color.blue()
-    )
-    
-    fields = {
-        "🎮 Jeux": ["games_played", "games_won", "games_lost"],
-        "🍺 Taverne": ["beers_drunk"],
-        "🥷 Crime": ["crimes_success", "crimes_attempts"],
-        "🔐 Brinks": ["vault_success", "vault_attempts"],
-        "🐎 PMU": ["pmu_wins", "pmu_bets"],
-        "⚔️ Duels": ["duels_won", "duels_played"],
-        "💼 Travail": ["work_done"],
-        "🏦 Banque": ["bank_deposits", "bank_withdrawals"],
-        "📋 Quêtes": ["quests_completed", "quests_claimed"],
-        "🎯 Jeux spéciaux": ["blackjack_wins", "slots_wins", "roulette_wins", "pfc_wins", "poker_wins", "russian_roulette_survive", "dice_wins", "arena_wins"],
-    }
-    
-    for category, field_list in fields.items():
-        lines = []
-        for field in field_list:
-            value = data.get(field, 0)
-            if value > 0 or field in ["games_played", "games_won", "games_lost"]:
-                label = field.replace("_", " ").title()
-                lines.append(f"{label}: **{value}**")
-        if lines:
-            embed.add_field(name=category, value="\n".join(lines), inline=True)
-    
-    embed.set_footer(text=f"Dernière mise à jour: {data.get('last_updated', 'Jamais')}")
-    
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(name="reset-achievements", description="[ADMIN] Réinitialise définitivement les succès d'un joueur ou de tout le monde")
+@bot.tree.command(name="reset-achievements", description="[ADMIN] Réinitialise définitivement les succès d'un joueur")
 @app_commands.checks.has_permissions(administrator=True)
 async def reset_achievements(interaction: discord.Interaction, membre: discord.Member = None):
     await interaction.response.defer(ephemeral=True)
@@ -1471,85 +1303,9 @@ async def reset_achievements(interaction: discord.Interaction, membre: discord.M
     await interaction.followup.send(msg, ephemeral=True)
 
 
-# =============================================================
-# CHARGEMENT DES ÉPISODES DEPUIS GITHUB
-# =============================================================
-
-EPISODE_TITLES = {}
-EPISODE_STORIES = {}
-EPISODES_LOADED = False
-
-EPISODES_BASE_URL = "https://raw.githubusercontent.com/morgandede0-cyber/Bot-IV-Alpha/main/episodes/"
-TOTAL_EPISODES = 30
-
-
-async def load_episodes_from_github():
-    global EPISODE_TITLES, EPISODE_STORIES, EPISODES_LOADED
-    
-    titles = {}
-    stories = {}
-    loaded_count = 0
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            for ep_num in range(1, TOTAL_EPISODES + 1):
-                filename = f"S1 EP{ep_num}.txt"
-                url = EPISODES_BASE_URL + filename
-                try:
-                    async with session.get(url, timeout=10) as response:
-                        if response.status == 200:
-                            content = await response.text()
-                            lines = content.split('\n')
-                            if lines:
-                                title = lines[0].strip()
-                                story = '\n'.join(lines[1:]).strip()
-                                titles[ep_num] = title
-                                stories[ep_num] = story
-                                loaded_count += 1
-                                print(f"✅ Épisode {ep_num} chargé : {title[:30]}...")
-                        else:
-                            print(f"⚠️ Épisode {ep_num} introuvable (HTTP {response.status})")
-                except Exception as e:
-                    print(f"❌ Erreur chargement épisode {ep_num}: {e}")
-        
-        if loaded_count > 0:
-            EPISODE_TITLES = titles
-            EPISODE_STORIES = stories
-            EPISODES_LOADED = True
-            print(f"✅ {loaded_count}/{TOTAL_EPISODES} épisodes chargés depuis GitHub")
-            return True
-        else:
-            EPISODE_TITLES = {1: "Épisode 1 — L'Arche"}
-            EPISODE_STORIES = {1: "« Une histoire mystérieuse... »"}
-            EPISODES_LOADED = True
-            return False
-    except Exception as e:
-        print(f"❌ Erreur chargement épisodes: {e}")
-        EPISODE_TITLES = {1: "Épisode 1 — L'Arche"}
-        EPISODE_STORIES = {1: "« Une histoire mystérieuse... »"}
-        EPISODES_LOADED = True
-        return False
-
-
-@bot.tree.command(name="reload-episodes", description="[ADMIN] Recharge les épisodes depuis GitHub")
-@app_commands.checks.has_permissions(administrator=True)
-async def reload_episodes(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    success = await load_episodes_from_github()
-    if success:
-        embed = discord.Embed(
-            title="✅ Épisodes rechargés",
-            description=f"{len(EPISODE_TITLES)} épisodes chargés depuis GitHub avec succès !",
-            color=discord.Color.green()
-        )
-    else:
-        embed = discord.Embed(
-            title="⚠️ Rechargement partiel",
-            description="Certains épisodes n'ont pas pu être chargés.",
-            color=discord.Color.orange()
-        )
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
+# ==========================================
+# 8. GÉNÉRATION DE LA CARTE DE PROFIL MEE6
+# ==========================================
 
 async def generate_mee6_profile_card(member: discord.Member, unlocked_achievements: dict) -> io.BytesIO:
     width, height = 740, 230
@@ -1628,55 +1384,8 @@ class AchievementProfileView(ui.View):
         self.add_item(ui.Button(label="Liste des succès", style=discord.ButtonStyle.link, url="https://listeachievementiv.netlify.app/", emoji="📜"))
 
 
-def get_episode_title(ep_num: int) -> str:
-    if EPISODES_LOADED and ep_num in EPISODE_TITLES:
-        return EPISODE_TITLES.get(ep_num, f"Épisode {ep_num}")
-    return f"Épisode {ep_num}"
-
-
 # ==========================================
-# 4. FONCTIONS UTILITAIRES & HELPERS
-# ==========================================
-
-def check_cooldown(user_id: int, command_name: str, duration: int) -> int:
-    """Wrapper pour utiliser Redis ou fallback mémoire"""
-    return check_cooldown_redis(user_id, command_name, duration)
-
-
-def clear_cooldown(user_id: int, command_name: str = None):
-    """Wrapper pour utiliser Redis ou fallback mémoire"""
-    clear_cooldown_redis(user_id, command_name)
-
-
-async def validate_game_bet(
-    interaction: discord.Interaction, command_name: str, bet: int, cooldown_sec: int = 3600
-) -> bool:
-    async def reject(message: str):
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
-
-    if bet <= 0:
-        await reject("❌ La mise doit être supérieure à 0 $ !")
-        return False
-    if bet > MAX_BET:
-        await reject(f"❌ La mise maximale autorisée est de **{MAX_BET} $** !")
-        return False
-    wallet = get_user_cached(interaction.user.id)[0]
-    if wallet < bet:
-        await reject("❌ Solde insuffisant dans ton portefeuille ! Pense à retirer de l'argent via /banque.")
-        return False
-    retry_after = check_cooldown_redis(interaction.user.id, command_name, cooldown_sec)
-    if retry_after > 0:
-        minutes, seconds = divmod(retry_after, 60)
-        await reject(f"⏳ Tu dois attendre **{minutes} min et {seconds} sec** avant de pouvoir rejouer.")
-        return False
-    return True
-
-
-# ==========================================
-# 5. VUE POUR LE PANNEAU PUBLIC DES QUÊTES
+# 9. VUE POUR LE PANNEAU PUBLIC DES QUÊTES
 # ==========================================
 
 class PublicQuestsView(ui.View):
@@ -1739,7 +1448,7 @@ class PublicQuestsView(ui.View):
 
 
 # ==========================================
-# 6. MODALES DE MISE
+# 10. MODALES DE MISE
 # ==========================================
 
 class BetModal(ui.Modal):
@@ -1814,384 +1523,31 @@ class BrookPMUBetModal(ui.Modal, title="📜 Brook - Montant de la mise"):
 
 
 # ==========================================
-# 6.1. SYSTÈMES DE DUEL ENTRE JOUEURS
+# 11. COMMANDES D'ÉCONOMIE, BANQUE & ADMIN
 # ==========================================
 
-DUEL_REFUSED_MESSAGES = [
-    "😱 **{opponent}** a eu la trouille et s'est caché sous la table ! {challenger} reste sans adversaire...",
-    "🫣 **{opponent}** a préféré sauver sa peau plutôt que d'affronter {challenger} ! Quel couard !",
-    "🍗 **{opponent}** s'est enfui en courant, il avait trop peur de perdre ses précieux deniers !",
-    "🤡 **{opponent}** a fait le mort, {challenger} attend toujours son duel...",
-    "💀 **{opponent}** a réalisé qu'il allait perdre et a préféré faire semblant de ne pas voir le défi !",
-    "🐔 **{opponent}** a picoré et s'est envolé ! {challenger} reste avec sa fierté intacte.",
-    "😤 **{opponent}** a décliné le duel, trop occupé à compter ses sous dans son coin !",
-    "🤣 **{opponent}** a eu la pétoche et s'est planqué derrière le comptoir !",
-    "🦆 **{opponent}** a fait le canard et s'est couvert les yeux ! {challenger} attend toujours un vrai guerrier !",
-    "🏃‍♂️ **{opponent}** a pris ses jambes à son cou, visiblement il n'était pas prêt pour ce combat !"
-]
-
-
-class DuelPFCView(ui.View):
-    def __init__(self, challenger: discord.Member, opponent: discord.Member, bet: int):
-        super().__init__(timeout=60)
-        self.challenger = challenger
-        self.opponent = opponent
-        self.bet = bet
-        self.choices = {}
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id not in [self.challenger.id, self.opponent.id]:
-            await interaction.response.send_message("❌ Ce duel ne vous concerne pas !", ephemeral=True)
-            return False
-        if interaction.user.id in self.choices:
-            await interaction.response.send_message("❌ Vous avez déjà fait votre choix !", ephemeral=True)
-            return False
-        return True
-
-    async def process_choice(self, interaction: discord.Interaction, choice: str):
-        self.choices[interaction.user.id] = choice
-        await interaction.response.send_message(f"🔒 Choix enregistré : **{choice}**.", ephemeral=True)
-
-        if len(self.choices) == 2:
-            for child in self.children:
-                child.disabled = True
-
-            c_choice = self.choices[self.challenger.id]
-            o_choice = self.choices[self.opponent.id]
-
-            emaps = {"pierre": "🪨 Pierre", "feuille": "📄 Feuille", "ciseau": "✂️ Ciseau"}
-
-            if c_choice == o_choice:
-                res_text = "🤝 **Égalité !** Personne ne remporte la mise."
-            elif ((c_choice == "pierre" and o_choice == "ciseau") or
-                  (c_choice == "feuille" and o_choice == "pierre") or
-                  (c_choice == "ciseau" and o_choice == "feuille")):
-                update_wallet(self.challenger.id, self.bet)
-                update_wallet(self.opponent.id, -self.bet)
-                update_game_stats(self.challenger.id, won=True)
-                update_game_stats(self.opponent.id, won=False)
-                update_quest_progress_v2(self.challenger.id, "duel_won", 1)
-                track_duel(self.challenger.id, won=True)
-                await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
-                res_text = f"🏆 **Victoire de {self.challenger.mention} !** Il remporte **{format_currency(self.bet)}**."
-                await send_public_log(
-                    content=f"⚔️ **{self.challenger.display_name}** a remporté un duel PFC contre {self.opponent.display_name} ! +**{format_currency(self.bet)}**"
-                )
-            else:
-                update_wallet(self.opponent.id, self.bet)
-                update_wallet(self.challenger.id, -self.bet)
-                update_game_stats(self.opponent.id, won=True)
-                update_game_stats(self.challenger.id, won=False)
-                update_quest_progress_v2(self.opponent.id, "duel_won", 1)
-                track_duel(self.opponent.id, won=True)
-                await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
-                res_text = f"🏆 **Victoire de {self.opponent.mention} !** Il remporte **{format_currency(self.bet)}**."
-                await send_public_log(
-                    content=f"⚔️ **{self.opponent.display_name}** a remporté un duel PFC contre {self.challenger.display_name} ! +**{format_currency(self.bet)}**"
-                )
-
-            embed = discord.Embed(
-                title="⚔️ RÉSULTAT DU DUEL PFC",
-                description=(
-                    f"👤 {self.challenger.mention} a choisi : `{emaps[c_choice]}`\n"
-                    f"👤 {self.opponent.mention} a choisi : `{emaps[o_choice]}`\n\n"
-                    f"{res_text}"
-                ),
-                color=discord.Color.gold()
-            )
-            await interaction.message.edit(embed=embed, view=self)
-
-    @ui.button(label="Pierre", style=discord.ButtonStyle.primary, emoji="🪨")
-    async def fn_pierre(self, interaction: discord.Interaction, button: ui.Button):
-        await self.process_choice(interaction, "pierre")
-
-    @ui.button(label="Feuille", style=discord.ButtonStyle.success, emoji="📄")
-    async def fn_feuille(self, interaction: discord.Interaction, button: ui.Button):
-        await self.process_choice(interaction, "feuille")
-
-    @ui.button(label="Ciseau", style=discord.ButtonStyle.danger, emoji="✂️")
-    async def fn_ciseau(self, interaction: discord.Interaction, button: ui.Button):
-        await self.process_choice(interaction, "ciseau")
-
-
-class DuelDiceView(ui.View):
-    def __init__(self, challenger: discord.Member, opponent: discord.Member, bet: int):
-        super().__init__(timeout=60)
-        self.challenger = challenger
-        self.opponent = opponent
-        self.bet = bet
-        self.rolls = {}
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id not in [self.challenger.id, self.opponent.id]:
-            await interaction.response.send_message("❌ Ce duel ne vous concerne pas !", ephemeral=True)
-            return False
-        if interaction.user.id in self.rolls:
-            await interaction.response.send_message("❌ Vous avez déjà lancé vos dés !", ephemeral=True)
-            return False
-        return True
-
-    @ui.button(label="🎲 Lancer les dés", style=discord.ButtonStyle.primary)
-    async def roll_btn(self, interaction: discord.Interaction, button: ui.Button):
-        d1, d2 = random.randint(1, 6), random.randint(1, 6)
-        total = d1 + d2
-        self.rolls[interaction.user.id] = total
-        await interaction.response.send_message(f"🎲 Vous avez obtenu **{total}** ({d1} + {d2}).", ephemeral=True)
-
-        if len(self.rolls) == 2:
-            for child in self.children:
-                child.disabled = True
-
-            c_score = self.rolls[self.challenger.id]
-            o_score = self.rolls[self.opponent.id]
-
-            if c_score == o_score:
-                res_text = "🤝 **Égalité parfaite !** Les mises sont remboursées."
-            elif c_score > o_score:
-                update_wallet(self.challenger.id, self.bet)
-                update_wallet(self.opponent.id, -self.bet)
-                update_game_stats(self.challenger.id, won=True)
-                update_game_stats(self.opponent.id, won=False)
-                update_quest_progress_v2(self.challenger.id, "duel_won", 1)
-                track_duel(self.challenger.id, won=True)
-                await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
-                res_text = f"🏆 **Victoire de {self.challenger.mention} ({c_score} vs {o_score}) !** Il remporte **{format_currency(self.bet)}**."
-                await send_public_log(
-                    content=f"🎲 **{self.challenger.display_name}** a remporté un duel de dés contre {self.opponent.display_name} ! +**{format_currency(self.bet)}**"
-                )
-            else:
-                update_wallet(self.opponent.id, self.bet)
-                update_wallet(self.challenger.id, -self.bet)
-                update_game_stats(self.opponent.id, won=True)
-                update_game_stats(self.challenger.id, won=False)
-                update_quest_progress_v2(self.opponent.id, "duel_won", 1)
-                track_duel(self.opponent.id, won=True)
-                await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
-                res_text = f"🏆 **Victoire de {self.opponent.mention} ({o_score} vs {c_score}) !** Il remporte **{format_currency(self.bet)}**."
-                await send_public_log(
-                    content=f"🎲 **{self.opponent.display_name}** a remporté un duel de dés contre {self.challenger.display_name} ! +**{format_currency(self.bet)}**"
-                )
-
-            embed = discord.Embed(
-                title="⚔️ RÉSULTAT DU DUEL DÉS",
-                description=(
-                    f"👤 {self.challenger.mention} : `{c_score}`\n"
-                    f"👤 {self.opponent.mention} : `{o_score}`\n\n"
-                    f"{res_text}"
-                ),
-                color=discord.Color.gold()
-            )
-            await interaction.message.edit(embed=embed, view=self)
-
-
-class DuelAcceptView(ui.View):
-    def __init__(self, challenger: discord.Member, opponent: discord.Member, game_type: str, bet: int, from_jim: bool = True, interaction_ref: discord.Interaction = None):
-        super().__init__(timeout=30)
-        self.challenger = challenger
-        self.opponent = opponent
-        self.game_type = game_type
-        self.bet = bet
-        self.from_jim = from_jim
-        self.interaction_ref = interaction_ref
-        self.public_message = None
-        self.responded = False
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.opponent.id:
-            await interaction.response.send_message("❌ Seul l'adversaire défié peut accepter ou refuser ce duel.", ephemeral=True)
-            return False
-        if self.responded:
-            await interaction.response.send_message("❌ Ce duel a déjà reçu une réponse.", ephemeral=True)
-            return False
-        return True
-
-    async def on_timeout(self):
-        if self.responded:
-            return
-        
-        for child in self.children:
-            child.disabled = True
-        
-        mock_message = random.choice(DUEL_REFUSED_MESSAGES).format(
-            opponent=self.opponent.mention,
-            challenger=self.challenger.mention
-        )
-        
-        location = "la taverne" if self.from_jim else "l'arène"
-        embed = discord.Embed(
-            title="⏰ DUEL EXPIRÉ",
-            description=f"{mock_message}\n\nLe duel à {location} a été automatiquement annulé.",
-            color=discord.Color.dark_red()
-        )
-        
-        try:
-            if self.public_message:
-                await self.public_message.edit(embed=embed, view=self)
-            elif self.interaction_ref:
-                try:
-                    await self.interaction_ref.edit_original_response(embed=embed, view=self)
-                except Exception:
-                    pass
-            
-            await send_public_log(
-                content=f"⏰ **{self.challenger.display_name}** a défié {self.opponent.display_name} mais celui-ci n'a pas répondu à temps ! (30s) 🐔"
-            )
-        except Exception as e:
-            print(f"❌ Erreur expiration duel : {e}")
-
-    @ui.button(label="Accepter le Duel", style=discord.ButtonStyle.success, emoji="✅")
-    async def accept(self, interaction: discord.Interaction, button: ui.Button):
-        wallet_opp, _, _, _, _, _, _, _, _ = get_user_cached(self.opponent.id)
-        wallet_chal, _, _, _, _, _, _, _, _ = get_user_cached(self.challenger.id)
-
-        if wallet_opp < self.bet:
-            return await interaction.response.send_message("❌ Vous n'avez pas assez d'argent dans votre portefeuille pour accepter ce duel.", ephemeral=True)
-        if wallet_chal < self.bet:
-            return await interaction.response.send_message(f"❌ {self.challenger.mention} n'a plus assez d'argent pour honorer le duel.", ephemeral=True)
-
-        self.responded = True
-        for child in self.children:
-            child.disabled = True
-
-        update_quest_progress(self.challenger.id, "duel_played", 1)
-        update_quest_progress(self.opponent.id, "duel_played", 1)
-
-        location = "de la taverne" if self.from_jim else "de l'arène"
-        await send_public_log(
-            content=f"⚔️ **{self.challenger.display_name}** et **{self.opponent.display_name}** s'affrontent dans un duel {location} ! Mise : **{format_currency(self.bet)}**"
-        )
-
-        if self.game_type == "pfc":
-            view = DuelPFCView(self.challenger, self.opponent, self.bet)
-            embed = discord.Embed(
-                title="⚔️ DUEL PFC EN COURS",
-                description=f"Affrontement entre {self.challenger.mention} et {self.opponent.mention} !\nMise en jeu : **{format_currency(self.bet)}**\n\nChacun doit faire son choix en privé via les boutons ci-dessous :",
-                color=discord.Color.orange()
-            )
-            await interaction.response.edit_message(embed=embed, view=view)
-        elif self.game_type == "dice":
-            view = DuelDiceView(self.challenger, self.opponent, self.bet)
-            embed = discord.Embed(
-                title="⚔️ DUEL DÉS EN COURS",
-                description=f"Affrontement entre {self.challenger.mention} et {self.opponent.mention} !\nMise en jeu : **{format_currency(self.bet)}**\n\nCliquez sur le bouton pour lancer vos dés :",
-                color=discord.Color.orange()
-            )
-            await interaction.response.edit_message(embed=embed, view=view)
-
-    @ui.button(label="Refuser", style=discord.ButtonStyle.danger, emoji="❌")
-    async def decline(self, interaction: discord.Interaction, button: ui.Button):
-        self.responded = True
-        for child in self.children:
-            child.disabled = True
-        embed = discord.Embed(
-            title="⚔️ Duel Refusé",
-            description=f"{self.opponent.mention} a décliné le duel proposé par {self.challenger.mention}.",
-            color=discord.Color.red()
-        )
-        await interaction.response.edit_message(embed=embed, view=self)
-        await send_public_log(
-            content=f"❌ **{self.opponent.display_name}** a refusé le duel de **{self.challenger.display_name}** !"
-        )
-
-
-# ==========================================
-# 7. INTERFACES INTERACTIVES & MODALES (BANQUE & DAB)
-# ==========================================
-
-class DepositModal(ui.Modal, title="📥 DAB - Dépôt de billets"):
-    amount = ui.TextInput(
-        label="Montant à déposer", placeholder="Ex: 500", required=True
+@bot.tree.command(name="banque", description="Accéder au Distributeur Automatique de Billets (DAB)")
+async def banque(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    file_bank = discord.File("assets/bank.png", filename="bank.png") if os.path.exists("assets/bank.png") else None
+    embed = discord.Embed(
+        title="🏦 Banque des IV Sceaux",
+        description=(
+            "*(Un grincement lourd résonne dans la salle forte)*\n\n"
+            "Bienvenue au guichet automatique de la **Banque des IV Sceaux**.\n"
+            "Gérez vos avoirs en toute sécurité, déposez vos liquidités ou effectuez des retraits "
+            "pour alimenter votre portefeuille avant de vous aventurer dans les jeux."
+        ),
+        color=0x34495E
     )
+    if file_bank:
+        embed.set_image(url="attachment://bank.png")
+    embed.set_footer(text="Banque des IV Sceaux • Service Financier Permanent")
 
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            val = int(self.amount.value)
-            if val <= 0:
-                return await interaction.followup.send(
-                    "❌ Le montant doit être supérieur à 0.", ephemeral=True
-                )
-
-            wallet, _, _, _, _, _, _, _, _ = get_user_cached(interaction.user.id)
-            if wallet < val:
-                return await interaction.followup.send(
-                    "❌ Fente à billets : Solde insuffisant dans votre portefeuille.",
-                    ephemeral=True,
-                )
-
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "UPDATE users SET wallet = wallet - ?, bank = bank + ? WHERE"
-                    " user_id = ?",
-                    (val, val, interaction.user.id),
-                )
-                conn.commit()
-
-            invalidate_user_cache(interaction.user.id)
-
-            update_quest_progress(interaction.user.id, "bank_deposit", 1)
-            update_quest_progress_v2(interaction.user.id, "bank_deposit", 1)
-            track_bank_deposit(interaction.user.id)
-            await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
-
-            await send_public_log(
-                content=f"💵 **{interaction.user.display_name}** a déposé **{format_currency(val)}** à la banque !"
-            )
-
-            await interaction.followup.send(
-                f"💵 **[DÉPÔT EFFECTUÉ]** +{format_currency(val)} ont été insérés sur"
-                " votre compte.",
-                ephemeral=True,
-            )
-        except ValueError:
-            await interaction.followup.send(
-                "❌ Veuillez entrer un nombre entier valide.", ephemeral=True
-            )
-
-
-class WithdrawModal(ui.Modal, title="📤 DAB - Retrait de billets"):
-    amount = ui.TextInput(
-        label="Montant à retirer", placeholder="Ex: 500", required=True
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            val = int(self.amount.value)
-            if val <= 0:
-                return await interaction.followup.send(
-                    "❌ Le montant doit être supérieur à 0.", ephemeral=True
-                )
-
-            _, bank, _, _, _, _, _, _, _ = get_user_cached(interaction.user.id)
-            if bank < val:
-                return await interaction.followup.send(
-                    "❌ Solde bancaire insuffisant.", ephemeral=True
-                )
-
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "UPDATE users SET bank = bank - ?, wallet = wallet + ? WHERE"
-                    " user_id = ?",
-                    (val, val, interaction.user.id),
-                )
-                conn.commit()
-
-            invalidate_user_cache(interaction.user.id)
-
-            await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
-
-            await interaction.followup.send(
-                f"💸 **[BILLETS DISTRIBUÉS]** Veuillez récupérer vos"
-                f" {format_currency(val)}.",
-                ephemeral=True,
-            )
-        except ValueError:
-            await interaction.followup.send(
-                "❌ Veuillez entrer un nombre entier valide.", ephemeral=True
-            )
+    kwargs = {"embed": embed, "view": BankView(), "ephemeral": True}
+    if file_bank:
+        kwargs["file"] = file_bank
+    await interaction.followup.send(**kwargs)
 
 
 class BankView(ui.View):
@@ -2201,7 +1557,7 @@ class BankView(ui.View):
     @ui.button(label="[ 💳 SOLDE ]", style=discord.ButtonStyle.primary, custom_id="persistent_bank:solde")
     async def check_balance(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
-        wallet, bank, _, _, _, _, _, _, _ = get_user_cached(interaction.user.id)
+        wallet, bank, _, _, _, _, _, _, _ = get_user(interaction.user.id)
         total = wallet + bank
         name = interaction.user.display_name.upper()[:16]
 
@@ -2234,1088 +1590,272 @@ class BankView(ui.View):
         await interaction.response.send_modal(WithdrawModal())
 
 
-# ==========================================
-# 8. INTERFACES DES IA : JIM, JOHN, BROOK & BOB
-# ==========================================
-
-class TavernierGamesView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-
-    @ui.button(label="🎲 Dés", style=discord.ButtonStyle.primary, custom_id="taverne_game_dice")
-    async def play_dice(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BetModal("🎲 Dés - Mise", run_dice_game))
-
-    @ui.button(label="🎡 Roulette", style=discord.ButtonStyle.primary, custom_id="taverne_game_roulette")
-    async def play_roulette(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BetModal("🎡 Roulette - Mise", run_roulette_game))
-
-    @ui.button(label="🔫 R. Russe", style=discord.ButtonStyle.danger, custom_id="taverne_game_rr")
-    async def play_russian_roulette(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BetModal("🔫 Roulette Russe - Mise", run_russian_roulette))
-
-    @ui.button(label="👑 Blackjack", style=discord.ButtonStyle.success, custom_id="taverne_game_bj")
-    async def play_bj(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BetModal("👑 Blackjack - Mise", run_blackjack_game))
-
-    @ui.button(label="🪙 Slots", style=discord.ButtonStyle.success, custom_id="taverne_game_slots")
-    async def play_slots(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BetModal("🪙 Slots - Mise", run_slots_game))
-
-    @ui.button(label="✂️ PFC", style=discord.ButtonStyle.secondary, custom_id="taverne_game_pfc")
-    async def play_pfc(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BetModal("✂️ PFC - Mise", run_pfc_game))
-
-    @ui.button(label="⚜️ Poker", style=discord.ButtonStyle.secondary, custom_id="taverne_game_poker")
-    async def play_poker(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BetModal("⚜️ Poker Solitaire - Mise", run_poker_game))
-
-
-class TavernDuelBetModal(ui.Modal, title="⚔️ Tavernier - Configuration du Duel"):
-    bet_input = ui.TextInput(label="Montant de la mise", placeholder="Ex: 100", required=True, max_length=6)
-
-    def __init__(self, opponent: discord.Member, game_type: str):
-        super().__init__()
-        self.opponent = opponent
-        self.game_type = game_type
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=False)
-        try:
-            bet = int(self.bet_input.value)
-        except ValueError:
-            return await interaction.followup.send("❌ Veuillez entrer un nombre entier valide.", ephemeral=True)
-
-        if self.opponent.id == interaction.user.id:
-            return await interaction.followup.send("❌ Vous ne pouvez pas vous affronter vous-même !", ephemeral=True)
-        if self.opponent.bot:
-            return await interaction.followup.send("❌ Vous ne pouvez pas affronter un bot !", ephemeral=True)
-        if bet <= 0:
-            return await interaction.followup.send("❌ La mise doit être supérieure à 0 $ !", ephemeral=True)
-        if bet > MAX_BET:
-            return await interaction.followup.send(f"❌ La mise maximale autorisée est de **{MAX_BET} $** !", ephemeral=True)
-
-        wallet_chal, _, _, _, _, _, _, _, _ = get_user_cached(interaction.user.id)
-        if wallet_chal < bet:
-            return await interaction.followup.send("❌ Solde insuffisant dans votre portefeuille !", ephemeral=True)
-
-        wallet_opp, _, _, _, _, _, _, _, _ = get_user_cached(self.opponent.id)
-        if wallet_opp < bet:
-            return await interaction.followup.send(f"❌ {self.opponent.mention} n'a pas assez d'argent dans son portefeuille pour accepter cette mise.", ephemeral=True)
-
-        game_name = "Dés du Destin" if self.game_type == "dice" else "Pierre-Feuille-Ciseaux"
-        view = DuelAcceptView(interaction.user, self.opponent, self.game_type, bet, from_jim=True, interaction_ref=interaction)
-        
-        embed = discord.Embed(
-            title="⚔️ DÉFI DE DUEL (TAVERNE)",
-            description=(
-                f"{interaction.user.mention} défie {self.opponent.mention} à un duel de **{game_name}** sous l'œil de Jim !\n\n"
-                f"💰 **Mise en jeu** : `{format_currency(bet)}` par joueur\n\n"
-                f"{self.opponent.mention}, acceptez-vous ce défi ?\n\n"
-                f"⏰ Vous avez **30 secondes** pour répondre !"
-            ),
-            color=discord.Color.dark_red()
-        )
-        view.public_message = await send_public_log(embed=embed, view=view)
-        if view.public_message is None:
-            return await interaction.followup.send("❌ Impossible d'envoyer la demande de duel dans le Salon B. Vérifie les permissions du bot.", ephemeral=True)
-        await interaction.followup.send("✅ Demande de duel envoyée dans le Salon B.", ephemeral=True)
-
-
-class TavernDuelSelect(ui.UserSelect):
-    def __init__(self, game_type: str):
-        super().__init__(
-            placeholder="Choisis ton adversaire pour le duel...",
-            min_values=1,
-            max_values=1,
-            custom_id=f"jim_duel_select_{game_type}"
-        )
-        self.game_type = game_type
-
-    async def callback(self, interaction: discord.Interaction):
-        opponent = self.values[0]
-        if opponent.id == interaction.user.id:
-            return await interaction.response.send_message("❌ Tu ne peux pas te défier toi-même !", ephemeral=True)
-        if opponent.bot:
-            return await interaction.response.send_message("❌ Tu ne peux pas défier un bot !", ephemeral=True)
-
-        await interaction.response.send_modal(TavernDuelBetModal(opponent, self.game_type))
-
-
-class TavernDuelSelectView(ui.View):
-    def __init__(self, game_type: str):
-        super().__init__(timeout=60)
-        self.add_item(TavernDuelSelect(game_type))
-
-
-class TavernDuelChoiceView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-
-    @ui.button(label="Dés du Destin", style=discord.ButtonStyle.primary, emoji="🎲", custom_id="jim_duel_choice_dice")
-    async def choice_dice(self, interaction: discord.Interaction, button: ui.Button):
-        embed = discord.Embed(
-            title="⚔️ Duel de Dés - Choix de l'adversaire",
-            description="Sélectionne le joueur à affronter dans le menu déroulant ci-dessous :",
-            color=discord.Color.orange()
-        )
-        await interaction.response.send_message(embed=embed, view=TavernDuelSelectView("dice"), ephemeral=True)
-
-    @ui.button(label="Pierre-Feuille-Ciseaux", style=discord.ButtonStyle.secondary, emoji="✂️", custom_id="jim_duel_choice_pfc")
-    async def choice_pfc(self, interaction: discord.Interaction, button: ui.Button):
-        embed = discord.Embed(
-            title="⚔️ Duel PFC - Choix de l'adversaire",
-            description="Sélectionne le joueur à affronter dans le menu déroulant ci-dessous :",
-            color=discord.Color.orange()
-        )
-        await interaction.response.send_message(embed=embed, view=TavernDuelSelectView("pfc"), ephemeral=True)
-
-
-class JimTavernView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @ui.button(label="Commander une Pinte", style=discord.ButtonStyle.primary, emoji="🍺", custom_id="jim_pinte")
-    async def pinte(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        user_id = interaction.user.id
-
-        retry_after = check_cooldown_redis(user_id, "jim_taverne", 3600)
-        if retry_after > 0:
-            minutes, seconds = divmod(retry_after, 60)
-            msg_text = f'🍺 *Jim te regarde de travers* : "Tu as déjà bu, attends **{minutes}m {seconds}s**."'
-            return await interaction.followup.send(msg_text, ephemeral=True)
-
-        wallet, _, _, _, beers_today, last_beer_date, _, _, _ = get_user_cached(user_id)
-
-        today_str = time.strftime("%Y-%m-%d")
-        if last_beer_date != today_str:
-            beers_today = 0
-            last_beer_date = today_str
-
-        if beers_today >= 5 and not TEST_MODE_ENABLED:
-            return await interaction.followup.send("🍺 *Jim croise les bras et repousse ta chope* : \"Non, mon ami, ça suffit pour aujourd'hui ! Tu es déjà bien trop saoul, reviens demain.\"", ephemeral=True)
-
-        if wallet < 50:
-            return await interaction.followup.send("🍺 *Jim* : \"Tu n'as même pas 50 $ pour payer ta pinte !\"", ephemeral=True)
-
-        update_wallet(user_id, -50)
-        beers_today += 1
-        update_quest_progress(user_id, "beer_drunk", 1)
-        update_quest_progress_v2(user_id, "beer_drunk", 1)
-
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE users SET beers_today = ?, last_beer_date = ? WHERE user_id = ?",
-                (beers_today, last_beer_date, user_id)
-            )
-            conn.commit()
-
-        invalidate_user_cache(user_id)
-
-        # Tracker les données d'achievement
-        track_beer(user_id)
-        await check_and_unlock_achievements(user_id, bot_client=bot)
-
-        events = [
-            ("gain", 200, f"🍻 Tu as passé une excellente soirée et gagné à un jeu de dés clandestin ! +**{format_currency(200)}**"),
-            ("gain", 100, f"🍻 Tu as bu un coup avec des marchands, ils t'ont offert des babioles revendues. +**{format_currency(100)}**"),
-            ("loss", 50, f"💤 Tu t'es endormi sur une table... Quelqu'un t'a fait les poches ! -**{format_currency(50)}**"),
-            ("loss", 80, f"💥 En te levant d'un coup un peu trop sec, tu bouscules un client et dois payer pour casser sa chope ! -**{format_currency(80)}**"),
-            ("neutral", 0, f"🍖 Jim t'a servi une pinte bien fraîche et un ragoût maison. Santé !"),
-        ]
-
-        event_type, amount, outcome = random.choice(events)
-        if event_type == "gain":
-            update_wallet(user_id, amount)
-        elif event_type == "loss":
-            current_wallet, _, _, _, _, _, _, _, _ = get_user_cached(user_id)
-            actual_loss = min(amount, current_wallet)
-            if actual_loss > 0:
-                update_wallet(user_id, -actual_loss)
-
-        await send_public_log(
-            content=f"🍺 **{interaction.user.display_name}** a commandé une pinte chez Jim ! (#{beers_today}/5) {outcome}"
-        )
-
-        await interaction.followup.send(f"🪵 **[JIM LE TAVERNIER]** (Pinte #{beers_today}/5) {outcome}", ephemeral=True)
-
-    @ui.button(label="Jeux de la Taverne", style=discord.ButtonStyle.success, emoji="🎲", custom_id="jim_games")
-    async def games_hub(self, interaction: discord.Interaction, button: ui.Button):
-        embed = discord.Embed(
-            title="🎲 Coin des Jeux de la Taverne",
-            description="Choisis un jeu ci-dessous pour lancer une partie avec une mise :",
-            color=discord.Color.dark_orange()
-        )
-        await interaction.response.send_message(embed=embed, view=TavernierGamesView(), ephemeral=True)
-
-    @ui.button(label="Défier un joueur (Duel)", style=discord.ButtonStyle.danger, emoji="⚔️", custom_id="jim_duel")
-    async def duel_hub(self, interaction: discord.Interaction, button: ui.Button):
-        embed = discord.Embed(
-            title="⚔️ Coin des Duels de la Taverne",
-            description="Choisis le type de jeu pour ton duel face à un autre habitué :",
-            color=discord.Color.dark_red()
-        )
-        await interaction.response.send_message(embed=embed, view=TavernDuelChoiceView(), ephemeral=True)
-
-
-# ==========================================
-# JOHN - BRIGAND
-# ==========================================
-
-class JohnRobSelect(ui.UserSelect):
-    def __init__(self):
-        super().__init__(
-            placeholder="Choisis la cible à braquer...",
-            min_values=1,
-            max_values=1,
-            custom_id="john_rob_select"
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        user_id = interaction.user.id
-        
-        victim = self.values[0]
-        if victim.id == user_id:
-            return await interaction.followup.send("❌ Tu ne peux pas te voler toi-même.", ephemeral=True)
-
-        if victim.bot:
-            return await interaction.followup.send("❌ Tu ne peux pas braquer un bot.", ephemeral=True)
-
-        retry_after = 0
-        if REDIS_AVAILABLE and redis_client:
-            key = f"cooldown:{user_id}:john_rob"
-            retry_after = redis_client.ttl(key)
-        
-        if retry_after > 0 and not TEST_MODE_ENABLED:
-            minutes, seconds = divmod(retry_after, 60)
-            return await interaction.followup.send(f'🗡️ *John* : "Calme tes ardeurs de voleur, attends **{minutes}m {seconds}s**."', ephemeral=True)
-
-        victim_wallet, _, _, _, _, _, _, _, _ = get_user_cached(victim.id)
-        thief_wallet, _, _, _, _, _, _, _, _ = get_user_cached(user_id)
-
-        if victim_wallet < 50:
-            return await interaction.followup.send(f"🗡️ *John* : \" {victim.mention} n'a pas un sou, c'est une perte de temps.\"", ephemeral=True)
-
-        if REDIS_AVAILABLE and redis_client:
-            redis_client.setex(f"cooldown:{user_id}:john_rob", 60, "1")
-
-        roll = random.random()
-        
-        if roll < 0.4:
-            stolen = random.randint(50, int(victim_wallet * 0.7))
-            update_wallet(victim.id, -stolen)
-            update_wallet(user_id, stolen)
-            track_larcin(user_id, success=True)
-            await check_and_unlock_achievements(user_id, bot_client=bot)
-            
-            await send_public_log(
-                content=f"🥷 **{interaction.user.display_name}** a réussi à voler **{format_currency(stolen)}** à {victim.display_name} !"
-            )
-            
-            await interaction.followup.send(
-                f"🥷 **[JOHN LE BRIGAND]** Tu as réussi à dérober **{format_currency(stolen)}** à {victim.mention} sans qu'il s'en rende compte ! Bien joué !",
-                ephemeral=True
-            )
-            
-        elif roll < 0.7:
-            await send_public_log(
-                content=f"🥷 **{interaction.user.display_name}** a tenté de voler {victim.display_name} mais a échoué !"
-            )
-            
-            await interaction.followup.send(
-                f"❌ **[JOHN LE BRIGAND]** Tu as essayé mais {victim.mention} s'est méfié et a gardé son argent bien en sécurité. Pas de butin aujourd'hui.",
-                ephemeral=True
-            )
-            
-        else:
-            stolen_from_thief = min(random.randint(50, int(thief_wallet * 0.5)), thief_wallet)
-            if stolen_from_thief > 0:
-                update_wallet(user_id, -stolen_from_thief)
-                update_wallet(victim.id, stolen_from_thief)
-                
-                await send_public_log(
-                    content=f"💥 **{interaction.user.display_name}** s'est fait tabasser et dépouiller par {victim.display_name} ! Perte : **{format_currency(stolen_from_thief)}**"
-                )
-                
-                await interaction.followup.send(
-                    f"💥 **[JOHN LE BRIGAND]** Mauvais plan ! {victim.mention} t'a repéré et t'a tabassé avant de te dépouiller de **{format_currency(stolen_from_thief)}** !",
-                    ephemeral=True
-                )
-            else:
-                await send_public_log(
-                    content=f"💥 **{interaction.user.display_name}** s'est fait repérer par {victim.display_name} mais le voleur était trop pauvre pour se faire dépouiller !"
-                )
-                
-                await interaction.followup.send(
-                    f"💥 **[JOHN LE BRIGAND]** {victim.mention} t'a repéré et t'a roué de coups, mais t'es trop pauvre pour te faire voler. Ça t'apprendra !",
-                    ephemeral=True
-                )
-
-
-class JohnRobView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-        self.add_item(JohnRobSelect())
-
-
-class BrinksVaultModal(ui.Modal, title="🔒 Coffre de la Brinks - Code à 4 chiffres"):
-    code_input = ui.TextInput(label="Entrer la combinaison (4 chiffres)", placeholder="Ex: 4812", required=True, min_length=4, max_length=4)
-
-    def __init__(self, prize: int, attempts_left: int, secret_code: str):
-        super().__init__()
-        self.prize = prize
-        self.attempts_left = attempts_left
-        self.secret_code = secret_code
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        user_input = self.code_input.value
-        if not user_input.isdigit() or len(user_input) != 4:
-            return await interaction.followup.send("❌ Le code doit être exactement composé de 4 chiffres !", ephemeral=True)
-
-        user_id = interaction.user.id
-
-        if user_input == self.secret_code:
-            update_wallet(user_id, self.prize)
-            track_vault(user_id, success=True)
-            await check_and_unlock_achievements(user_id, bot_client=bot)
-            
-            await send_public_log(
-                content=f"🔐 **{interaction.user.display_name}** a réussi le braquage de la Brinks ! Il a empoché **{format_currency(self.prize)}** !"
-            )
-            
-            embed = discord.Embed(
-                title="🔐 [BRINKS] COFFRE OUVERT !",
-                description=f"🎉 Incroyable ! Tu as trouvé la bonne combinaison **{self.secret_code}** !\nTu récupères le butin de **{format_currency(self.prize)}** !",
-                color=discord.Color.green()
-            )
-            return await interaction.followup.send(embed=embed, ephemeral=True)
-
-        hints = []
-        for i in range(4):
-            if user_input[i] == self.secret_code[i]:
-                hints.append(f"Chiffre {i+1} (`{user_input[i]}`) : **Bien placé**")
-            elif user_input[i] in self.secret_code:
-                hints.append(f"Chiffre {i+1} (`{user_input[i]}`) : **Bon mais mauvais endroit**")
-            else:
-                hints.append(f"Chiffre {i+1} (`{user_input[i]}`) : **Incorrect**")
-
-        self.attempts_left -= 1
-
-        if self.attempts_left > 0:
-            view = BrinksVaultView(self.prize, self.attempts_left, self.secret_code)
-            embed = discord.Embed(
-                title="🔒 [BRINKS] Alarme retentit...",
-                description=(
-                    f"❌ Mauvaise combinaison !\n"
-                    f"Tentatives restantes : **{self.attempts_left}/5**\n\n"
-                    "**Indices :**\n" + "\n".join(hints)
-                ),
-                color=discord.Color.orange()
-            )
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-        else:
-            _, bank, _, _, _, _, _, _, _ = get_user_cached(user_id)
-            fine = int(bank * 0.05)
-            if fine > 0:
-                with get_db_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("UPDATE users SET bank = bank - ? WHERE user_id = ?", (fine, user_id))
-                    conn.commit()
-                invalidate_user_cache(user_id)
-
-            await send_public_log(
-                content=f"🚨 **{interaction.user.display_name}** s'est fait prendre lors d'un braquage de la Brinks ! Amende : **-{format_currency(fine)}**"
-            )
-
-            embed = discord.Embed(
-                title="🚨 [BRINKS] ARRIVÉE DE LA POLICE !",
-                description=(
-                    "💥 Trop de temps perdu ! Les forces de l'ordre débarquent en trombe et bouclent la zone.\n"
-                    f"Tu t'enfuis de justesse mais la police te saisis une amende de 5% sur ton compte en banque : **-{format_currency(fine)}** !"
-                ),
-                color=discord.Color.red()
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-class BrinksVaultView(ui.View):
-    def __init__(self, prize: int, attempts_left: int, secret_code: str):
-        super().__init__(timeout=60)
-        self.prize = prize
-        self.attempts_left = attempts_left
-        self.secret_code = secret_code
-
-    @ui.button(label="Entrer une combinaison", style=discord.ButtonStyle.danger, emoji="🔢", custom_id="brinks_vault_input")
-    async def try_code_btn(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BrinksVaultModal(self.prize, self.attempts_left, self.secret_code))
-
-
-class JohnCrimeView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @ui.button(label="Tenter un Crime", style=discord.ButtonStyle.danger, emoji="🥷", custom_id="john_crime_btn")
-    async def crime_btn(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        user_id = interaction.user.id
-        retry_after = check_cooldown_redis(user_id, "john_crime", 60)
-        if retry_after > 0:
-            minutes, seconds = divmod(retry_after, 60)
-            msg_text = f'🥷 *John* : "Reviens dans **{minutes}m {seconds}s**."'
-            return await interaction.followup.send(msg_text, ephemeral=True)
-
-        success = random.choice([True, False])
-        wallet, _, _, _, _, _, _, _, _ = get_user_cached(user_id)
-        update_quest_progress(user_id, "crime_attempt", 1)
-        update_quest_progress_v2(user_id, "crime_attempt", 1)
-
-        if success:
-            gain = random.randint(300, 1000)
-            update_wallet(user_id, gain)
-            track_crime(user_id, success=True)
-            await check_and_unlock_achievements(user_id, bot_client=bot)
-            
-            await send_public_log(
-                content=f"🥷 **{interaction.user.display_name}** a réussi un crime et a gagné **{format_currency(gain)}** !"
-            )
-            
-            await interaction.followup.send(f"🥷 **[JOHN LE BRIGAND]** Joli coup ! Vol réussi. +**{format_currency(gain)}**", ephemeral=True)
-        else:
-            loss = min(random.randint(100, 400), wallet)
-            if loss > 0:
-                update_wallet(user_id, -loss)
-                await send_public_log(
-                    content=f"🚨 **{interaction.user.display_name}** s'est fait prendre par la milice lors d'un crime ! Amende : **{format_currency(loss)}**"
-                )
-                await interaction.followup.send(f"🚨 **[JOHN LE BRIGAND]** La milice t'a repéré ! Amende : -**{format_currency(loss)}**", ephemeral=True)
-            else:
-                await interaction.followup.send("🚨 **[JOHN LE BRIGAND]** Pris la main dans le sac, mais tu es trop pauvre pour payer.", ephemeral=True)
-
-    @ui.button(label="Braquer quelqu'un", style=discord.ButtonStyle.secondary, emoji="🗡️", custom_id="john_rob_btn")
-    async def rob_btn(self, interaction: discord.Interaction, button: ui.Button):
-        user_id = interaction.user.id
-        retry_after = 0
-        if REDIS_AVAILABLE and redis_client:
-            key = f"cooldown:{user_id}:john_rob"
-            retry_after = redis_client.ttl(key)
-        
-        if retry_after > 0:
-            minutes, seconds = divmod(retry_after, 60)
-            msg_text = f'🗡️ *John* : "Patiente encore **{minutes}m {seconds}s**."'
-            return await interaction.response.send_message(msg_text, ephemeral=True)
-
-        embed = discord.Embed(
-            title="🗡️ Braquage en cours",
-            description="Sélectionne ta cible dans le menu déroulant ci-dessous :",
-            color=discord.Color.dark_theme()
-        )
-        await interaction.response.send_message(embed=embed, view=JohnRobView(), ephemeral=True)
-
-    @ui.button(label="Braquage de la Brinks", style=discord.ButtonStyle.success, emoji="🔐", custom_id="john_vault_btn")
-    async def vault_btn(self, interaction: discord.Interaction, button: ui.Button):
-        user_id = interaction.user.id
-        retry_after = check_cooldown_redis(user_id, "john_vault", 3600)
-        if retry_after > 0:
-            hours, remainder = divmod(retry_after, 3600)
-            minutes, seconds = divmod(remainder, 60)
-            return await interaction.response.send_message(f'🔐 *John* : "Le convoi de la Brinks est surveillé. Attends **{hours}h {minutes}m {seconds}s** avant de replonger."', ephemeral=True)
-
-        update_quest_progress(user_id, "vault_attempt", 1)
-        update_quest_progress_v2(user_id, "vault_attempt", 1)
-        prize = random.randint(2000, 7500)
-        secret_code = f"{random.randint(0, 9)}{random.randint(0, 9)}{random.randint(0, 9)}{random.randint(0, 9)}"
-
-        embed = discord.Embed(
-            title="🔐 Braquage de la Brinks",
-            description=(
-                "*(John t'amène devant un lourd coffre-fort blindé posé à l'arrière d'un fourgon)*\n\n"
-                f"Le coffre contient un magot estimé à **{format_currency(prize)}** !\n"
-                "Tu disposes de **5 tentatives** pour deviner le code à 4 chiffres. À chaque essai, un indice te guidera.\n"
-                "Attention : si tu échoues, la police débarque et te prélève 5% de ton compte bancaire !"
-            ),
-            color=discord.Color.dark_purple()
-        )
-        await interaction.response.send_message(embed=embed, view=BrinksVaultView(prize, 5, secret_code), ephemeral=True)
-
-
-# ==========================================
-# BOB LE MAITRE D'ARME
-# ==========================================
-
-class ArenaFightView(ui.View):
-    def __init__(self, user_id: int, bet: int):
-        super().__init__(timeout=60)
-        self.user_id = user_id
-        self.bet = bet
-        self.player_hp = 100
-        self.bob_hp = 100
-        self.round_count = 0
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Ce n'est pas votre combat !", ephemeral=True)
-            return False
-        return True
-
-    def build_embed(self, status_msg: str, color=discord.Color.red()) -> discord.Embed:
-        desc = (
-            f"⚔️ **DUEL DANS L'ARÈNE** ⚔️\n\n"
-            f"👤 **Votre PV** : `{'❤️' * max(1, int(self.player_hp / 10))}` ({self.player_hp}/100)\n"
-            f"🛡️ **Bob le Maître d'Arme** : `{'🖤' * max(1, int(self.bob_hp / 10))}` ({self.bob_hp}/100)\n\n"
-            f"📜 *Action* : {status_msg}"
-        )
-        embed = discord.Embed(title="🏟️ Arène des IV Sceaux", description=desc, color=color)
-        embed.set_footer(text=f"Mise en jeu : {format_currency(self.bet)}")
-        return embed
-
-    async def process_turn(self, interaction: discord.Interaction, player_move: str):
-        self.round_count += 1
-        
-        if player_move == "heavy":
-            p_dmg = random.randint(18, 32) if random.random() < 0.6 else 0
-            p_text = f"Vous abattez une frappe lourde qui inflige **{p_dmg} dégâts** !" if p_dmg > 0 else "Votre frappe lourde a fendu l'air dans le vide !"
-        elif player_move == "fast":
-            p_dmg = random.randint(10, 18)
-            p_text = f"Votre estoc rapide touche Bob pour **{p_dmg} dégâts** !"
-        else: 
-            p_dmg = 0
-            p_text = "Vous adoptez une posture défensive pour parer les coups."
-
-        self.bob_hp = max(0, self.bob_hp - p_dmg)
-
-        if self.bob_hp <= 0:
-            for child in self.children:
-                child.disabled = True
-            gain = self.bet * 2
-            update_wallet(self.user_id, gain - self.bet)
-            update_game_stats(self.user_id, won=True)
-            update_quest_progress_v2(self.user_id, "arena_fight", 1)
-            track_game_win(self.user_id, "arena")
-            await check_and_unlock_achievements(self.user_id, bot_client=bot)
-            
-            await send_public_log(
-                content=f"⚔️ **{interaction.user.display_name}** a vaincu Bob dans l'arène après {self.round_count} rounds et remporte **{format_currency(gain)}** !"
-            )
-            
-            embed = self.build_embed(f"{p_text}\n\n🏆 **VICTOIRE !** Bob s'agenouille, vaincu par votre bravoure ! +**{format_currency(gain)}**", color=discord.Color.green())
-            await interaction.response.edit_message(embed=embed, view=self)
-            return
-
-        bob_move = random.choice(["heavy", "fast", "bash"])
-        if bob_move == "heavy" and player_move != "parry":
-            b_dmg = random.randint(15, 25)
-            b_text = f"Bob décoche un coup de massue devastateur : **-{b_dmg} PV** !"
-        elif bob_move == "fast":
-            b_dmg = random.randint(8, 15)
-            b_text = f"Bob décoche un coup de dague vif : **-{b_dmg} PV** !"
-        else:
-            b_dmg = 5 if player_move != "parry" else 0
-            b_text = f"Bob assène un coup de bouclier : **-{b_dmg} PV** !" if b_dmg > 0 else "Votre garde parfaite absorbe entièrement l'attaque de Bob !"
-
-        self.player_hp = max(0, self.player_hp - b_dmg)
-
-        if self.player_hp <= 0:
-            for child in self.children:
-                child.disabled = True
-            update_wallet(self.user_id, -self.bet)
-            update_game_stats(self.user_id, won=False)
-            
-            await send_public_log(
-                content=f"💀 **{interaction.user.display_name}** a été vaincu par Bob dans l'arène après {self.round_count} rounds ! (-{format_currency(self.bet)})"
-            )
-            
-            embed = self.build_embed(f"{p_text}\n{b_text}\n\n💀 **DÉFAITE !** Bob vous terrasse d'un ultime coup de taille. -**{format_currency(self.bet)}**", color=discord.Color.dark_red())
-            await interaction.response.edit_message(embed=embed, view=self)
-            return
-
-        embed = self.build_embed(f"{p_text}\n{b_text}")
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @ui.button(label="Frappe Lourde (60%)", style=discord.ButtonStyle.danger, emoji="🪓", custom_id="arena_heavy")
-    async def heavy_strike(self, interaction: discord.Interaction, button: ui.Button):
-        await self.process_turn(interaction, "heavy")
-
-    @ui.button(label="Estoc Rapide (100%)", style=discord.ButtonStyle.primary, emoji="🗡️", custom_id="arena_fast")
-    async def fast_strike(self, interaction: discord.Interaction, button: ui.Button):
-        await self.process_turn(interaction, "fast")
-
-    @ui.button(label="Posture Défensive", style=discord.ButtonStyle.secondary, emoji="🛡️", custom_id="arena_parry")
-    async def parry_stance(self, interaction: discord.Interaction, button: ui.Button):
-        await self.process_turn(interaction, "parry")
-
-
-async def run_arena_fight(interaction: discord.Interaction, bet: int):
-    if not await validate_game_bet(interaction, "arene_fight", bet, cooldown_sec=1800):
-        return
-
-    update_quest_progress(interaction.user.id, "arena_fight", 1)
-    update_quest_progress_v2(interaction.user.id, "arena_fight", 1)
-    
-    await send_public_log(
-        content=f"⚔️ **{interaction.user.display_name}** entre dans l'arène pour affronter Bob ! Mise : **{format_currency(bet)}**"
-    )
-    
-    view = ArenaFightView(interaction.user.id, bet)
-    embed = view.build_embed("Le combat commence ! Choisissez votre style d'attaque.", color=discord.Color.orange())
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-
-class BobArenaView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @ui.button(label="Entrer dans l'Arène (Combattre Bob)", style=discord.ButtonStyle.danger, emoji="⚔️", custom_id="bob_arena_fight")
-    async def fight_btn(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BetModal("⚔️ Arène - Mise de Combat", run_arena_fight))
-
-    @ui.button(label="Défier un ami (Duel PvP)", style=discord.ButtonStyle.secondary, emoji="🤺", custom_id="bob_arena_duel")
-    async def duel_btn(self, interaction: discord.Interaction, button: ui.Button):
-        embed = discord.Embed(
-            title="🤺 Défi de l'Arène - Choix de l'adversaire",
-            description=(
-                "*(Bob s'écarte et vous tend une arme d'entraînement)*\n\n"
-                "Sélectionne le membre que tu souhaites affronter dans le menu déroulant ci-dessous :"
-            ),
-            color=discord.Color.dark_gold()
-        )
-        await interaction.response.send_message(embed=embed, view=ArenaDuelSelectView(), ephemeral=True)
-
-
-class ArenaDuelSelect(ui.UserSelect):
-    def __init__(self):
-        super().__init__(
-            placeholder="Choisis ton adversaire pour le duel de l'arène...",
-            min_values=1,
-            max_values=1,
-            custom_id="bob_arena_duel_select"
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        opponent = self.values[0]
-        if opponent.id == interaction.user.id:
-            return await interaction.response.send_message("❌ Tu ne peux pas te défier toi-même !", ephemeral=True)
-        if opponent.bot:
-            return await interaction.response.send_message("❌ Tu ne peux pas défier un bot !", ephemeral=True)
-
-        await interaction.response.send_modal(ArenaDuelBetModal(opponent))
-
-
-class ArenaDuelSelectView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-        self.add_item(ArenaDuelSelect())
-
-
-class ArenaDuelBetModal(ui.Modal, title="⚔️ Arène - Mise du Duel"):
-    bet_input = ui.TextInput(label="Montant de la mise", placeholder="Ex: 100", required=True, max_length=6)
-
-    def __init__(self, opponent: discord.Member):
-        super().__init__()
-        self.opponent = opponent
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=False)
-        try:
-            bet = int(self.bet_input.value)
-        except ValueError:
-            return await interaction.followup.send("❌ Veuillez entrer un nombre entier valide.", ephemeral=True)
-
-        if self.opponent.id == interaction.user.id:
-            return await interaction.followup.send("❌ Vous ne pouvez pas vous affronter vous-même !", ephemeral=True)
-        if self.opponent.bot:
-            return await interaction.followup.send("❌ Vous ne pouvez pas affronter un bot !", ephemeral=True)
-        if bet <= 0:
-            return await interaction.followup.send("❌ La mise doit être supérieure à 0 $ !", ephemeral=True)
-        if bet > MAX_BET:
-            return await interaction.followup.send(f"❌ La mise maximale autorisée est de **{MAX_BET} $** !", ephemeral=True)
-
-        wallet_chal, _, _, _, _, _, _, _, _ = get_user_cached(interaction.user.id)
-        if wallet_chal < bet:
-            return await interaction.followup.send("❌ Solde insuffisant dans votre portefeuille !", ephemeral=True)
-
-        wallet_opp, _, _, _, _, _, _, _, _ = get_user_cached(self.opponent.id)
-        if wallet_opp < bet:
-            return await interaction.followup.send(f"❌ {self.opponent.mention} n'a pas assez d'argent dans son portefeuille pour accepter ce duel.", ephemeral=True)
-
-        view = DuelAcceptView(interaction.user, self.opponent, "dice", bet, from_jim=False, interaction_ref=interaction)
-        
-        embed = discord.Embed(
-            title="⚔️ DÉFI DE L'ARÈNE",
-            description=(
-                f"{interaction.user.mention} défie {self.opponent.mention} en duel dans l'arène de Bob !\n\n"
-                f"💰 **Mise en jeu** : `{format_currency(bet)}` par joueur\n\n"
-                f"{self.opponent.mention}, acceptez-vous ce combat ?\n\n"
-                f"⏰ Vous avez **30 secondes** pour répondre !"
-            ),
-            color=discord.Color.dark_gold()
-        )
-        view.public_message = await send_public_log(embed=embed, view=view)
-        if view.public_message is None:
-            return await interaction.followup.send("❌ Impossible d'envoyer la demande de duel dans le Salon B. Vérifie les permissions du bot.", ephemeral=True)
-        await interaction.followup.send("✅ Demande de duel envoyée dans le Salon B.", ephemeral=True)
-
-
-# ==========================================
-# PMU ET BROOK
-# ==========================================
-
-PMU_ODDS = {1: 3.0, 2: 3.0, 3: 3.0, 4: 3.0}
-
-
-async def run_pmu_game(interaction: discord.Interaction, cheval: int, bet: int):
-    if not await validate_game_bet(interaction, "pmu", bet, cooldown_sec=900):
-        return
-
-    update_quest_progress(interaction.user.id, "pmu_bet", 1)
-    update_quest_progress_v2(interaction.user.id, "pmu_bet", 1)
-    show_anim = get_user_animation_preference(interaction.user.id)
-
-    chevaux = {
-        1: {"nom": "Canabis", "emoji": "🐎"},
-        2: {"nom": "Jolly Jumper", "emoji": "🐴"},
-        3: {"nom": "Pégase", "emoji": "🦄"},
-        4: {"nom": "Petit Tonnerre", "emoji": "🏇"},
-    }
-
-    piste_len = 10
-    positions = {1: 0, 2: 0, 3: 0, 4: 0}
-
-    initial_piste = "🏁 **PMU - Départ de la course !** Les chevaux s'élancent...\n```text\n┌── HIPPODROME ────────┐\n"
-    for cid, data in chevaux.items():
-        initial_piste += f"│#{cid}[{data['emoji']}{'-'*piste_len}]│\n"
-    initial_piste += "└──────────────────────┘\n```"
-
-    await interaction.followup.send(initial_piste, ephemeral=True)
-    anim_manager = AnimatedMessageManager(interaction, show_animation=show_anim)
-
-    while max(positions.values()) < piste_len:
-        await asyncio.sleep(1.0)
-        for c in positions:
-            if positions[c] < piste_len:
-                positions[c] += random.randint(1, 3)
-                if positions[c] > piste_len:
-                    positions[c] = piste_len
-
-        piste_str = "🏁 **PMU - Course en cours...**\n```text\n┌── HIPPODROME ────────┐\n"
-        for cid, data in chevaux.items():
-            p = positions[cid]
-            ligne = "-" * p + data["emoji"] + "-" * (piste_len - p)
-            piste_str += f"│#{cid}[{ligne}]│\n"
-        piste_str += "└──────────────────────┘\n```"
-        await anim_manager.update_animation(new_content=piste_str)
-
-    max_p = max(positions.values())
-    gagnants = [c for c, p in positions.items() if p >= max_p]
-    gagnant = random.choice(gagnants)
-
-    cote = PMU_ODDS[cheval]
-
-    if cheval == gagnant:
-        gain = int(bet * cote)
-        update_wallet(interaction.user.id, gain - bet)
-        update_game_stats(interaction.user.id, won=True)
-        update_quest_progress_v2(interaction.user.id, "pmu_win", 1)
-        track_pmu(interaction.user.id, won=True)
-        await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
-        res_msg = f"🏆 **[PMU] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! Ton pari sur **{chevaux[cheval]['nom']}** (cote x{cote}) passe haut la main ! +**{format_currency(gain)}**"
-        
-        await send_public_log(
-            content=f"🏇 **{interaction.user.display_name}** a gagné un pari PMU sur **{chevaux[cheval]['nom']}** (x{cote}) et remporte **{format_currency(gain)}** !"
-        )
-    else:
-        update_wallet(interaction.user.id, -bet)
-        update_game_stats(interaction.user.id, won=False)
-        res_msg = f"❌ **[PMU] PERDU !** C'est #{gagnant} ({chevaux[gagnant]['nom']}) qui a gagné. Ton pari sur **{chevaux[cheval]['nom']}** (cote x{cote}) est perdant. -**{format_currency(bet)}**"
-        
-        await send_public_log(
-            content=f"🏇 **{interaction.user.display_name}** a perdu un pari PMU sur **{chevaux[cheval]['nom']}** (x{cote}). Perte : **{format_currency(bet)}**"
-        )
-
-    final_piste = "🏁 **PMU - Arrivée de la course !**\n```text\n┌── HIPPODROME ────────┐\n"
-    for cid, data in chevaux.items():
-        p = positions[cid]
-        ligne = "-" * p + data["emoji"] + "-" * (piste_len - p)
-        final_piste += f"│#{cid}[{ligne}]│\n"
-    final_piste += f"└──────────────────────┘\n```\n{res_msg}"
-
-    if not show_anim:
-        try:
-            await interaction.edit_original_response(content=final_piste)
-        except discord.HTTPException:
-            pass
-    else:
-        await anim_manager.update_animation(new_content=final_piste)
-
-
-def generate_brook_odds():
-    odds = {
-        1: round(random.uniform(1.3, 5.5), 2),
-        2: round(random.uniform(1.3, 5.5), 2),
-        3: round(random.uniform(1.3, 5.5), 2),
-        4: round(random.uniform(1.3, 5.5), 2)
-    }
-    return odds
-
-
-async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int, bet: int, dynamic_odds: dict, panel_message=None):
-    if not await validate_game_bet(interaction, "brook_bet", bet, cooldown_sec=1800):
-        return
-
-    update_quest_progress(interaction.user.id, "pmu_bet", 1)
-    update_quest_progress_v2(interaction.user.id, "pmu_bet", 1)
-    show_anim = get_user_animation_preference(interaction.user.id)
-
-    chevaux = {
-        1: {"nom": "Canabis", "emoji": "🐎"},
-        2: {"nom": "Jolly Jumper", "emoji": "🐴"},
-        3: {"nom": "Pégase", "emoji": "🦄"},
-        4: {"nom": "Petit Tonnerre", "emoji": "🏇"},
-    }
-
-    piste_len = 10
-    positions = {1: 0, 2: 0, 3: 0, 4: 0}
-
-    initial_piste = "🏁 **Brook - Départ de la course PMU !** Les chevaux s'élancent...\n```text\n┌── HIPPODROME ────────┐\n"
-    for cid, data in chevaux.items():
-        initial_piste += f"│#{cid}[{data['emoji']}{'-'*piste_len}]│\n"
-    initial_piste += "└──────────────────────┘\n```"
-
-    course_message = await interaction.followup.send(initial_piste, ephemeral=True, wait=True)
-
-    async def edit_course(content: str):
-        try:
-            await course_message.edit(content=content)
-        except discord.NotFound:
-            print("❌ Le message de course Brook n'existe plus.")
-        except discord.HTTPException as e:
-            print(f"❌ Erreur animation Brook : {e}")
-
-    weights = [round(10 / dynamic_odds[i], 2) for i in range(1, 5)]
-
-    while max(positions.values()) < piste_len:
-        await asyncio.sleep(1.0)
-        for c in positions:
-            if positions[c] < piste_len:
-                positions[c] += random.randint(1, 3)
-                if positions[c] > piste_len:
-                    positions[c] = piste_len
-
-        piste_str = "🏁 **Brook - Course PMU en cours...**\n```text\n┌── HIPPODROME ────────┐\n"
-        for cid, data in chevaux.items():
-            p = positions[cid]
-            ligne = "-" * p + data["emoji"] + "-" * (piste_len - p)
-            piste_str += f"│#{cid}[{ligne}]│\n"
-        piste_str += "└──────────────────────┘\n```"
-        await edit_course(piste_str)
-
-    max_p = max(positions.values())
-    gagnants = [c for c, p in positions.items() if p >= max_p]
-
-    gagnant = random.choices(gagnants, weights=[weights[c-1] for c in gagnants], k=1)[0] if len(gagnants) > 1 else gagnants[0]
-
-    cote = dynamic_odds[horse_choice]
-
-    if horse_choice == gagnant:
-        gain = int(bet * cote)
-        update_wallet(interaction.user.id, gain - bet)
-        update_game_stats(interaction.user.id, won=True)
-        update_quest_progress_v2(interaction.user.id, "pmu_win", 1)
-        track_pmu(interaction.user.id, won=True)
-        await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
-        res_msg = f"🏆 **[BROOK LA BOOKMAKEUSE] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! Ton pari sur **{chevaux[horse_choice]['nom']}** (cote x{cote}) passe haut la main ! +**{format_currency(gain)}**"
-        
-        await send_public_log(
-            content=f"🏇 **{interaction.user.display_name}** a gagné un pari Brook sur **{chevaux[horse_choice]['nom']}** (x{cote}) et remporte **{format_currency(gain)}** !"
-        )
-    else:
-        update_wallet(interaction.user.id, -bet)
-        update_game_stats(interaction.user.id, won=False)
-        res_msg = f"❌ **[BROOK LA BOOKMAKEUSE] PERDU !** C'est #{gagnant} ({chevaux[gagnant]['nom']}) qui a gagné. Ton pari sur **{chevaux[horse_choice]['nom']}** (cote x{cote}) est perdant. -**{format_currency(bet)}**"
-        
-        await send_public_log(
-            content=f"🏇 **{interaction.user.display_name}** a perdu un pari Brook sur **{chevaux[horse_choice]['nom']}** (x{cote}). Perte : **{format_currency(bet)}**"
-        )
-
-    final_piste = f"🏁 **Brook - Arrivée de la course PMU !**\n```text\n┌── HIPPODROME ────────┐\n"
-    for cid, data in chevaux.items():
-        p = positions[cid]
-        ligne = "-" * p + data["emoji"] + "-" * (piste_len - p)
-        final_piste += f"│#{cid}[{ligne}]│\n"
-    final_piste += f"└──────────────────────┘\n```\n{res_msg}"
-
-    await edit_course(final_piste)
-
-    new_odds = generate_brook_odds()
-    new_embed = discord.Embed(
-        description=(
-            "📜 **Guichet des Paris — BROOK**\n"
-            f"*(Tient un carnet de notes rempli de chiffres)* Bienvenue chez **Brook** ! Les cotes ont varié pour ce tour. "
-            f"Clique sur ton cheval favori pour lancer la course animée : Canabis (x{new_odds[1]}), Jolly Jumper (x{new_odds[2]}), Pégase (x{new_odds[3]}) ou Petit Tonnerre (x{new_odds[4]})."
-        ),
-        color=0x1ABC9C
+class DepositModal(ui.Modal, title="📥 DAB - Dépôt de billets"):
+    amount = ui.TextInput(
+        label="Montant à déposer", placeholder="Ex: 500", required=True
     )
 
-    try:
-        if panel_message is not None:
-            await panel_message.edit(embed=new_embed, view=BrookBookmakerView(new_odds))
-        else:
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            val = int(self.amount.value)
+            if val <= 0:
+                return await interaction.followup.send(
+                    "❌ Le montant doit être supérieur à 0.", ephemeral=True
+                )
+
+            wallet, _, _, _, _, _, _, _, _ = get_user(interaction.user.id)
+            if wallet < val:
+                return await interaction.followup.send(
+                    "❌ Fente à billets : Solde insuffisant dans votre portefeuille.",
+                    ephemeral=True,
+                )
+
             with get_db_connection() as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT channel_id FROM ai_channels WHERE ai_type = ?", ("brook",))
-                row = cur.fetchone()
-            if row:
-                channel = bot.get_channel(row[0])
-                if channel:
-                    async for message in channel.history(limit=50):
-                        if message.author == bot.user and message.embeds:
-                            desc = message.embeds[0].description or ""
-                            if "Guichet des Paris — BROOK" in desc:
-                                await message.edit(embed=new_embed, view=BrookBookmakerView(new_odds))
-                                break
-    except Exception as e:
-        print(f"❌ Erreur lors de la remise en place des boutons Brook : {type(e).__name__}: {e}")
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE users SET wallet = wallet - ?, bank = bank + ? WHERE"
+                    " user_id = ?",
+                    (val, val, interaction.user.id),
+                )
+                conn.commit()
+
+            if REDIS_AVAILABLE and redis_client:
+                redis_client.delete(f"user:{interaction.user.id}")
+
+            update_quest_progress(interaction.user.id, "bank_deposit", 1)
+            update_quest_progress_v2(interaction.user.id, "bank_deposit", 1)
+            await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
+
+            await send_public_log(
+                content=f"💵 **{interaction.user.display_name}** a déposé **{format_currency(val)}** à la banque !"
+            )
+
+            await interaction.followup.send(
+                f"💵 **[DÉPÔT EFFECTUÉ]** +{format_currency(val)} ont été insérés sur"
+                " votre compte.",
+                ephemeral=True,
+            )
+        except ValueError:
+            await interaction.followup.send(
+                "❌ Veuillez entrer un nombre entier valide.", ephemeral=True
+            )
 
 
-class BrookBookmakerView(ui.View):
-    def __init__(self, odds: dict):
-        super().__init__(timeout=None)
-        self.odds = odds
-
-        self.horse_1.label = f"Canabis (x{odds[1]})"
-        self.horse_2.label = f"Jolly Jumper (x{odds[2]})"
-        self.horse_3.label = f"Pégase (x{odds[3]})"
-        self.horse_4.label = f"Petit Tonnerre (x{odds[4]})"
-
-    @ui.button(label="Canabis", style=discord.ButtonStyle.primary, emoji="🐎", custom_id="brook_horse_1")
-    async def horse_1(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BrookPMUBetModal(1, self.odds, panel_message=interaction.message))
-
-    @ui.button(label="Jolly Jumper", style=discord.ButtonStyle.primary, emoji="🐴", custom_id="brook_horse_2")
-    async def horse_2(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BrookPMUBetModal(2, self.odds, panel_message=interaction.message))
-
-    @ui.button(label="Pégase", style=discord.ButtonStyle.primary, emoji="🦄", custom_id="brook_horse_3")
-    async def horse_3(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BrookPMUBetModal(3, self.odds, panel_message=interaction.message))
-
-    @ui.button(label="Petit Tonnerre", style=discord.ButtonStyle.primary, emoji="🏇", custom_id="brook_horse_4")
-    async def horse_4(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BrookPMUBetModal(4, self.odds, panel_message=interaction.message))
-
-
-# ==========================================
-# 9. COMMANDES D'ÉCONOMIE, BANQUE & ADMIN
-# ==========================================
-
-@bot.tree.command(name="banque", description="Accéder au Distributeur Automatique de Billets (DAB)")
-async def banque(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    file_bank = discord.File("assets/bank.png", filename="bank.png") if os.path.exists("assets/bank.png") else None
-    embed = discord.Embed(
-        title="🏦 Banque des IV Sceaux",
-        description=(
-            "*(Un grincement lourd résonne dans la salle forte)*\n\n"
-            "Bienvenue au guichet automatique de la **Banque des IV Sceaux**.\n"
-            "Gérez vos avoirs en toute sécurité, déposez vos liquidités ou effectuez des retraits "
-            "pour alimenter votre portefeuille avant de vous aventurer dans les jeux."
-        ),
-        color=0x34495E
+class WithdrawModal(ui.Modal, title="📤 DAB - Retrait de billets"):
+    amount = ui.TextInput(
+        label="Montant à retirer", placeholder="Ex: 500", required=True
     )
-    if file_bank:
-        embed.set_image(url="attachment://bank.png")
-    embed.set_footer(text="Banque des IV Sceaux • Service Financier Permanent")
 
-    kwargs = {"embed": embed, "view": BankView(), "ephemeral": True}
-    if file_bank:
-        kwargs["file"] = file_bank
-    await interaction.followup.send(**kwargs)
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            val = int(self.amount.value)
+            if val <= 0:
+                return await interaction.followup.send(
+                    "❌ Le montant doit être supérieur à 0.", ephemeral=True
+                )
+
+            _, bank, _, _, _, _, _, _, _ = get_user(interaction.user.id)
+            if bank < val:
+                return await interaction.followup.send(
+                    "❌ Solde bancaire insuffisant.", ephemeral=True
+                )
+
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE users SET bank = bank - ?, wallet = wallet + ? WHERE"
+                    " user_id = ?",
+                    (val, val, interaction.user.id),
+                )
+                conn.commit()
+
+            if REDIS_AVAILABLE and redis_client:
+                redis_client.delete(f"user:{interaction.user.id}")
+
+            await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
+
+            await interaction.followup.send(
+                f"💸 **[BILLETS DISTRIBUÉS]** Veuillez récupérer vos"
+                f" {format_currency(val)}.",
+                ephemeral=True,
+            )
+        except ValueError:
+            await interaction.followup.send(
+                "❌ Veuillez entrer un nombre entier valide.", ephemeral=True
+            )
 
 
-@bot.tree.command(name="duel", description="Affronter un ami à un jeu de la taverne (/dice ou /pfc)")
-@app_commands.choices(game=[
-    app_commands.Choice(name="Dés (/dice)", value="dice"),
-    app_commands.Choice(name="Pierre-Feuille-Ciseaux (/pfc)", value="pfc")
-])
-async def duel(interaction: discord.Interaction, opponent: discord.Member, game: str, bet: int):
+@bot.tree.command(name="daily", description="Réclame ta récompense quotidienne")
+async def daily(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=False)
-    if opponent.id == interaction.user.id:
-        return await interaction.followup.send("❌ Vous ne pouvez pas vous affronter vous-même !", ephemeral=True)
-    if opponent.bot:
-        return await interaction.followup.send("❌ Vous ne pouvez pas affronter un bot !", ephemeral=True)
-    if bet <= 0:
-        return await interaction.followup.send("❌ La mise doit être supérieure à 0 $ !", ephemeral=True)
-    if bet > MAX_BET:
-        return await interaction.followup.send(f"❌ La mise maximale autorisée est de **{MAX_BET} $** !", ephemeral=True)
-
-    wallet_chal, _, _, _, _, _, _, _, _ = get_user_cached(interaction.user.id)
-    if wallet_chal < bet:
-        return await interaction.followup.send("❌ Solde insuffisant dans votre portefeuille !", ephemeral=True)
-
-    wallet_opp, _, _, _, _, _, _, _, _ = get_user_cached(opponent.id)
-    if wallet_opp < bet:
-        return await interaction.followup.send(f"❌ {opponent.mention} n'a pas assez d'argent dans son portefeuille pour accepter cette mise.", ephemeral=True)
-
-    game_name = "Dés du Destin" if game == "dice" else "Pierre-Feuille-Ciseaux"
-    view = DuelAcceptView(interaction.user, opponent, game, bet, from_jim=True, interaction_ref=interaction)
-
-    embed = discord.Embed(
-        title="⚔️ DÉFI DE DUEL",
-        description=(
-            f"{interaction.user.mention} défie {opponent.mention} à un duel de **{game_name}** !\n\n"
-            f"💰 **Mise en jeu** : `{format_currency(bet)}` par joueur\n\n"
-            f"{opponent.mention}, acceptez-vous ce défi ?\n\n"
-            f"⏰ Vous avez **30 secondes** pour répondre !"
-        ),
-        color=discord.Color.dark_red()
-    )
-    view.public_message = await send_public_log(embed=embed, view=view)
-    if view.public_message is None:
-        return await interaction.followup.send("❌ Impossible d'envoyer la demande de duel dans le Salon B. Vérifie les permissions du bot.", ephemeral=True)
-    await interaction.followup.send("✅ Demande de duel envoyée dans le Salon B.", ephemeral=True)
-
-
-@bot.tree.command(name="pmu", description="Parie sur une course de chevaux rapide (PMU)")
-async def pmu(interaction: discord.Interaction):
-    await interaction.response.send_modal(PMUBetModal())
-
-
-@bot.tree.command(name="vault", description="Tenter de braquer le coffre de la Brinks")
-async def vault(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
     user_id = interaction.user.id
-    retry_after = check_cooldown_redis(user_id, "john_vault", 3600)
+    retry_after = check_cooldown(user_id, "daily", 86400)
     if retry_after > 0:
         hours, remainder = divmod(retry_after, 3600)
         minutes, seconds = divmod(remainder, 60)
-        return await interaction.followup.send(f'🔐 *John* : "Le convoi de la Brinks est surveillé. Attends **{hours}h {minutes}m {seconds}s** avant de replonger."', ephemeral=True)
+        return await interaction.followup.send(f"⏳ Déjà réclamé ! Reviens dans **{hours}h {minutes}m {seconds}s**.", ephemeral=True)
 
-    update_quest_progress(user_id, "vault_attempt", 1)
-    update_quest_progress_v2(user_id, "vault_attempt", 1)
-    prize = random.randint(2000, 7500)
-    secret_code = f"{random.randint(0, 9)}{random.randint(0, 9)}{random.randint(0, 9)}{random.randint(0, 9)}"
+    _, _, last_daily, streak, _, _, _, _, _ = get_user(user_id)
+    now = int(time.time())
 
-    embed = discord.Embed(
-        title="🔐 Braquage de la Brinks",
-        description=(
-            "*(John t'amène devant un lourd coffre-fort blindé posé à l'arrière d'un fourgon)*\n\n"
-            f"Le coffre contient un magot estimé à **{format_currency(prize)}** !\n"
-            "Tu disposes de **5 tentatives** pour deviner le code à 4 chiffres. À chaque essai, un indice te guidera.\n"
-            "Attention : si tu échoues, la police débarque et te prélève 5% de ton compte bancaire !"
-        ),
-        color=discord.Color.dark_purple()
+    time_passed = now - last_daily
+    reset_streak = False
+    if last_daily == 0 or time_passed > 172800:
+        streak = 1
+        reset_streak = last_daily != 0
+    else:
+        streak += 1
+
+    base_coins = random.randint(100, 500)
+    multiplier = 1 + ((streak - 1) * 0.10)
+    total_reward = min(int(base_coins * multiplier), 2500)
+
+    update_wallet(user_id, total_reward)
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET last_daily = ?, streak = ? WHERE user_id = ?", (now, streak, user_id))
+        conn.commit()
+    
+    if REDIS_AVAILABLE and redis_client:
+        redis_client.delete(f"user:{user_id}")
+
+    embed = discord.Embed(title="🎁 Daily", description=f"Tu as reçu **{format_currency(total_reward)}** !", color=discord.Color.blurple())
+    embed.add_field(name="🔥 Série", value=f"**{streak}j**", inline=False)
+    if reset_streak:
+        embed.add_field(name="⚠️ Réinitialisé", value="> 48h écoulées.", inline=False)
+
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="work", description="Gagne un peu d'argent en travaillant")
+async def work(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=False)
+    user_id = interaction.user.id
+    retry_after = check_cooldown(user_id, "work", 3600)
+    if retry_after > 0:
+        minutes, seconds = divmod(retry_after, 60)
+        await interaction.followup.send(
+            f"⏳ Tu dois attendre **{minutes} min et {seconds} sec** avant de pouvoir"
+            " travailler à nouveau.",
+            ephemeral=True,
+        )
+        return
+
+    if random.randint(1, 10) == 1:
+        await interaction.followup.send(
+            "🏛️ **Contrôle URSSAF !** Zéro déclaré , zéro pointé."
+        )
+        return
+
+    if random.randint(1, 10) == 1:
+        await interaction.followup.send(
+            "🏛️ **Inspection du travail !** Ton patron ne t'a pas déclaré, tu n'es donc pas payé."
+        )
+        return
+
+    gain = random.randint(100, 500)
+    update_wallet(user_id, gain)
+    update_quest_progress(user_id, "work_done", 1)
+    update_quest_progress_v2(user_id, "work_done", 1)
+    await check_and_unlock_achievements(user_id, bot_client=bot)
+
+    await send_public_log(
+        content=f"💼 **{interaction.user.display_name}** a travaillé et gagné **{format_currency(gain)}** !"
     )
-    await interaction.followup.send(embed=embed, view=BrinksVaultView(prize, 5, secret_code), ephemeral=True)
+
+    jobs = [
+        f"Tu as réparé le PC d'un voisin et gagné **{format_currency(gain)}** !",
+        f"Tu as modéré le serveur Discord toute la journée et reçu une prime de **{format_currency(gain)}** !",
+        f"Tu as gagné un petit tournoi de cartes et empoché **{format_currency(gain)}** !",
+        f"Tu as monté un canapé au 6ème sans ascenseur pour **{format_currency(gain)}** !",
+        f"Tu as passé la nuit à effacer les preuves d'une gaffe monumentale d'un modo saoul pour **{format_currency(gain)}** !",
+        f"Tu as fait du chantage à un modo en menaçant de leak ses pires audios et il t'a payé **{format_currency(gain)}** !",
+        f"Tu as livré les pizzas dans le quartier pour **{format_currency(gain)}** !",
+        f"Tu as tondu la pelouse du voisin pour **{format_currency(gain)}** !",
+        f"Tu as fait le service du midi dans un restaurant bondé pour **{format_currency(gain)}** !",
+        f"Tu as nettoyé les vitres du bureau local pour **{format_currency(gain)}** !",
+    ]
+    await interaction.followup.send(random.choice(jobs), ephemeral=True)
+
+
+@bot.tree.command(name="pay", description="Envoie de l'argent à un autre membre")
+async def pay(interaction: discord.Interaction, receiver: discord.Member, amount: int):
+    await interaction.response.defer(ephemeral=True)
+    if amount <= 0:
+        return await interaction.followup.send("❌ Montant invalide.", ephemeral=True)
+
+    sender_wallet, _, _, _, _, _, _, _, _ = get_user(interaction.user.id)
+    if sender_wallet < amount:
+        return await interaction.followup.send("❌ Solde insuffisant.", ephemeral=True)
+
+    update_wallet(interaction.user.id, -amount)
+    update_wallet(receiver.id, amount)
+    update_quest_progress(interaction.user.id, "pay_sent", 1)
+    update_quest_progress_v2(interaction.user.id, "pay_sent", 1)
+    
+    await send_public_log(
+        content=f"💸 **{interaction.user.display_name}** a envoyé **{format_currency(amount)}** à {receiver.display_name} !"
+    )
+    
+    await interaction.followup.send(f"💸 {interaction.user.mention} ➔ **{format_currency(amount)}** à {receiver.mention} !", ephemeral=True)
+
+
+@bot.tree.command(name="richest", description="Affiche l'économie globale du serveur et le classement exact")
+async def richest(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=False)
+    
+    if REDIS_AVAILABLE and redis_client:
+        top = redis_client.zrevrange("leaderboard:richest", 0, 9, withscores=True)
+        if top:
+            embed = discord.Embed(title="🏆 Classement", color=0xF1C40F)
+            description = ["🌐 **Global** : `Classement Redis`", "──────────────"]
+            medals = ["🥇", "🥈", "🥉"]
+            
+            for index, (user_id, score) in enumerate(top, start=1):
+                member = interaction.guild.get_member(int(user_id)) if interaction.guild else None
+                user_name = member.mention if member else f"<@{user_id}>"
+                rank_icon = medals[index - 1] if index <= 3 else f"`#{index:02d}`"
+                description.append(f"{rank_icon} {user_name} ➔ `{format_currency(int(score))}`")
+            
+            embed.description = "\n".join(description)
+            if interaction.guild and interaction.guild.icon:
+                embed.set_thumbnail(url=interaction.guild.icon.url)
+            await interaction.followup.send(embed=embed)
+            return
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, (COALESCE(wallet, 0) + COALESCE(bank, 0)) AS total FROM users ORDER BY total DESC")
+        rows = cursor.fetchall()
+
+    if not rows:
+        return await interaction.followup.send("❌ Aucun classement disponible pour le moment.", ephemeral=True)
+
+    server_total = sum(row[1] for row in rows)
+    embed = discord.Embed(title="🏆 Classement", color=0xF1C40F)
+    description = [f"🌐 **Global** : `{format_currency(server_total)}`", "──────────────"]
+    medals = ["🥇", "🥈", "🥉"]
+
+    for index, (user_id, total) in enumerate(rows[:10], start=1):
+        member = interaction.guild.get_member(user_id) if interaction.guild else None
+        user_name = member.mention if member else f"<@{user_id}>"
+        rank_icon = medals[index - 1] if index <= 3 else f"`#{index:02d}`"
+        description.append(f"{rank_icon} {user_name} ➔ `{format_currency(total)}`")
+
+    embed.description = "\n".join(description)
+    if interaction.guild and interaction.guild.icon:
+        embed.set_thumbnail(url=interaction.guild.icon.url)
+    await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="profile", description="Affiche ta carte récapitulative financière, tes statistiques de jeux et ta progression de l'histoire")
 async def profile(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     user = interaction.user
-    wallet, bank, _, streak, beers_today, _, games_played, games_won, games_lost = get_user_cached(user.id)
+    wallet, bank, _, streak, beers_today, _, games_played, games_won, games_lost = get_user(user.id)
     total_money = wallet + bank
 
     with get_db_connection() as conn:
@@ -3406,862 +1946,1356 @@ async def toggle_animations(interaction: discord.Interaction, mode: str):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="richest", description="Affiche l'économie globale du serveur et le classement exact")
-async def richest(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=False)
-    
-    top_redis = get_top_10_richest()
-    
-    if top_redis and REDIS_AVAILABLE:
-        embed = discord.Embed(title="🏆 Classement", color=0xF1C40F)
-        description = ["🌐 **Global** : `Classement Redis`", "──────────────"]
-        medals = ["🥇", "🥈", "🥉"]
-        
-        for index, (user_id, score) in enumerate(top_redis, start=1):
-            member = interaction.guild.get_member(int(user_id)) if interaction.guild else None
-            user_name = member.mention if member else f"<@{user_id}>"
-            rank_icon = medals[index - 1] if index <= 3 else f"`#{index:02d}`"
-            description.append(f"{rank_icon} {user_name} ➔ `{format_currency(int(score))}`")
-        
-        embed.description = "\n".join(description)
-        if interaction.guild and interaction.guild.icon:
-            embed.set_thumbnail(url=interaction.guild.icon.url)
-        await interaction.followup.send(embed=embed)
-        return
-    
+def get_user_animation_preference(user_id: int) -> bool:
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT user_id, (COALESCE(wallet, 0) + COALESCE(bank, 0)) AS total FROM users ORDER BY total DESC")
-        rows = cursor.fetchall()
-
-    if not rows:
-        return await interaction.followup.send("❌ Aucun classement disponible pour le moment.", ephemeral=True)
-
-    server_total = sum(row[1] for row in rows)
-    embed = discord.Embed(title="🏆 Classement", color=0xF1C40F)
-    description = [f"🌐 **Global** : `{format_currency(server_total)}`", "──────────────"]
-    medals = ["🥇", "🥈", "🥉"]
-
-    for index, (user_id, total) in enumerate(rows[:10], start=1):
-        member = interaction.guild.get_member(user_id) if interaction.guild else None
-        user_name = member.mention if member else f"<@{user_id}>"
-        rank_icon = medals[index - 1] if index <= 3 else f"`#{index:02d}`"
-        description.append(f"{rank_icon} {user_name} ➔ `{format_currency(total)}`")
-
-    embed.description = "\n".join(description)
-    if interaction.guild and interaction.guild.icon:
-        embed.set_thumbnail(url=interaction.guild.icon.url)
-    await interaction.followup.send(embed=embed)
+        cursor.execute("SELECT show_animations FROM user_preferences WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        if row is None:
+            cursor.execute("INSERT OR IGNORE INTO user_preferences (user_id, show_animations) VALUES (?, 1)", (user_id,))
+            conn.commit()
+            return True
+        return bool(row[0])
 
 
-@bot.tree.command(name="daily", description="Réclame ta récompense quotidienne")
-async def daily(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=False)
-    user_id = interaction.user.id
-    retry_after = check_cooldown_redis(user_id, "daily", 86400)
-    if retry_after > 0:
-        hours, remainder = divmod(retry_after, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        return await interaction.followup.send(f"⏳ Déjà réclamé ! Reviens dans **{hours}h {minutes}m {seconds}s**.", ephemeral=True)
-
-    _, _, last_daily, streak, _, _, _, _, _ = get_user_cached(user_id)
-    now = int(time.time())
-
-    time_passed = now - last_daily
-    reset_streak = False
-    if last_daily == 0 or time_passed > 172800:
-        streak = 1
-        reset_streak = last_daily != 0
-    else:
-        streak += 1
-
-    base_coins = random.randint(100, 500)
-    multiplier = 1 + ((streak - 1) * 0.10)
-    total_reward = min(int(base_coins * multiplier), 2500)
-
-    update_wallet(user_id, total_reward)
-
+def set_user_animation_preference(user_id: int, show: bool):
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET last_daily = ?, streak = ? WHERE user_id = ?", (now, streak, user_id))
+        cursor.execute("INSERT OR REPLACE INTO user_preferences (user_id, show_animations) VALUES (?, ?)", (user_id, 1 if show else 0))
         conn.commit()
-    
-    invalidate_user_cache(user_id)
-
-    embed = discord.Embed(title="🎁 Daily", description=f"Tu as reçu **{format_currency(total_reward)}** !", color=discord.Color.blurple())
-    embed.add_field(name="🔥 Série", value=f"**{streak}j**", inline=False)
-    if reset_streak:
-        embed.add_field(name="⚠️ Réinitialisé", value="> 48h écoulées.", inline=False)
-
-    await interaction.followup.send(embed=embed)
 
 
-def build_quest_embed(user: discord.abc.User, quests: list, base_reward: int, quest_streak: int) -> discord.Embed:
-    multiplier = get_quest_multiplier(quest_streak)
-    total_reward = round(base_reward * multiplier)
-    all_completed = all(q["progress"] >= q["target"] for q in quests)
-    already_claimed = any(q["claimed"] for q in quests)
+# ==========================================
+# 12. INTERFACES DES IA : JIM, JOHN, BROOK & BOB
+# ==========================================
 
-    embed = discord.Embed(
-        title=f"📋 Quêtes Journalières de {user.display_name}",
-        description=(
-            "Complète ces 5 défis en utilisant les activités des IV Sceaux (jeux, banque, "
-            "arène, taverne, crime...) pour gagner des récompenses. Réinitialisation toutes les **24h**.\n"
-            "⚠️ La récompense n'est versée que si **TOUTES** les quêtes sont terminées !\n\n"
-            f"💰 Cagnotte du jour : **{format_currency(base_reward)}** × Multiplicateur **x{multiplier:.2f}** "
-            f"(streak : {quest_streak}j) = **{format_currency(total_reward)}**"
-        ),
-        color=discord.Color.teal()
-    )
-    for q in quests:
-        progress = min(q["progress"], q["target"])
-        if q["claimed"]:
-            status = "✅ Récompense réclamée"
-        elif progress >= q["target"]:
-            status = "🎯 Terminée"
-        else:
-            status = "⏳ En cours"
-        embed.add_field(
-            name=status,
-            value=f"{q['description']}\nProgression : **{progress}/{q['target']}**",
-            inline=False
-        )
+class TavernierGamesView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
 
-    if already_claimed:
-        footer_text = "Récompense déjà récupérée aujourd'hui • Reviens demain !"
-    elif all_completed:
-        footer_text = "🎁 Toutes les quêtes sont validées, récupère ta récompense !"
-    else:
-        footer_text = f"Le multiplicateur augmente avec ton assiduité (plafond x{QUEST_STREAK_MULT_MAX:.2f})."
-    embed.set_footer(text=footer_text)
-    return embed
+    @ui.button(label="🎲 Dés", style=discord.ButtonStyle.primary, custom_id="taverne_game_dice")
+    async def play_dice(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(BetModal("🎲 Dés - Mise", run_dice_game))
+
+    @ui.button(label="🎡 Roulette", style=discord.ButtonStyle.primary, custom_id="taverne_game_roulette")
+    async def play_roulette(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(BetModal("🎡 Roulette - Mise", run_roulette_game))
+
+    @ui.button(label="🔫 R. Russe", style=discord.ButtonStyle.danger, custom_id="taverne_game_rr")
+    async def play_russian_roulette(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(BetModal("🔫 Roulette Russe - Mise", run_russian_roulette))
+
+    @ui.button(label="👑 Blackjack", style=discord.ButtonStyle.success, custom_id="taverne_game_bj")
+    async def play_bj(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(BetModal("👑 Blackjack - Mise", run_blackjack_game))
+
+    @ui.button(label="🪙 Slots", style=discord.ButtonStyle.success, custom_id="taverne_game_slots")
+    async def play_slots(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(BetModal("🪙 Slots - Mise", run_slots_game))
+
+    @ui.button(label="✂️ PFC", style=discord.ButtonStyle.secondary, custom_id="taverne_game_pfc")
+    async def play_pfc(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(BetModal("✂️ PFC - Mise", run_pfc_game))
+
+    @ui.button(label="⚜️ Poker", style=discord.ButtonStyle.secondary, custom_id="taverne_game_poker")
+    async def play_poker(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(BetModal("⚜️ Poker Solitaire - Mise", run_poker_game))
 
 
-class QuestClaimAllButton(ui.Button):
-    def __init__(self, quests: list):
-        all_completed = all(q["progress"] >= q["target"] for q in quests)
-        already_claimed = any(q["claimed"] for q in quests)
+class JimTavernView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
 
-        if already_claimed:
-            label = "Déjà réclamée ✅"
-            style = discord.ButtonStyle.secondary
-        elif all_completed:
-            label = "Tout Récolter"
-            style = discord.ButtonStyle.success
-        else:
-            nb_done = sum(1 for q in quests if q["progress"] >= q["target"])
-            label = f"Quêtes en cours... ({nb_done}/{len(quests)})"
-            style = discord.ButtonStyle.secondary
-
-        super().__init__(
-            label=label[:80],
-            style=style,
-            disabled=already_claimed or not all_completed,
-            emoji="🎁",
-            custom_id="quest_claim_all"
-        )
-
-    async def callback(self, interaction: discord.Interaction):
+    @ui.button(label="Commander une Pinte", style=discord.ButtonStyle.primary, emoji="🍺", custom_id="jim_pinte")
+    async def pinte(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
-        result = claim_all_daily_quests(interaction.user.id)
-        if result is None:
-            return await interaction.followup.send(
-                "❌ Toutes les quêtes doivent être terminées pour récupérer la récompense.", ephemeral=True
-            )
-        if result.get("already_claimed"):
-            return await interaction.followup.send(
-                "❌ Tu as déjà récupéré la récompense d'aujourd'hui !", ephemeral=True
-            )
+        user_id = interaction.user.id
 
-        quests = get_daily_quests(interaction.user.id)
-        base_reward, quest_streak, _ = get_quest_reward_state(interaction.user.id)
+        retry_after = check_cooldown(user_id, "jim_taverne", 3600)
+        if retry_after > 0:
+            minutes, seconds = divmod(retry_after, 60)
+            msg_text = f'🍺 *Jim te regarde de travers* : "Tu as déjà bu, attends **{minutes}m {seconds}s**."'
+            return await interaction.followup.send(msg_text, ephemeral=True)
 
-        await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
+        wallet, _, _, _, beers_today, last_beer_date, _, _, _ = get_user(user_id)
 
-        embed = build_quest_embed(interaction.user, quests, base_reward, quest_streak)
-        view = QuestView(quests, base_reward, quest_streak)
-        await interaction.message.edit(embed=embed, view=view)
-        await interaction.followup.send(
-            f"🎉 **Toutes les quêtes sont validées !**\n"
-            f"💰 Base : **{format_currency(result['base_reward'])}** × Multiplicateur **x{result['multiplier']:.2f}** "
-            f"(streak : {result['quest_streak']}j) = **+{format_currency(result['total_reward'])}**",
-            ephemeral=True
-        )
+        today_str = time.strftime("%Y-%m-%d")
+        if last_beer_date != today_str:
+            beers_today = 0
+            last_beer_date = today_str
 
+        if beers_today >= 5 and not TEST_MODE_ENABLED:
+            return await interaction.followup.send("🍺 *Jim croise les bras et repousse ta chope* : \"Non, mon ami, ça suffit pour aujourd'hui ! Tu es déjà bien trop saoul, reviens demain.\"", ephemeral=True)
 
-class QuestView(ui.View):
-    def __init__(self, quests: list, base_reward: int, quest_streak: int):
-        super().__init__(timeout=180)
-        self.add_item(QuestClaimAllButton(quests))
+        if wallet < 50:
+            return await interaction.followup.send("🍺 *Jim* : \"Tu n'as même pas 50 $ pour payer ta pinte !\"", ephemeral=True)
 
-
-@bot.tree.command(name="quetes", description="Consulte et réclame tes 5 quêtes journalières")
-async def quetes(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    quests = get_daily_quests(interaction.user.id)
-    base_reward, quest_streak, _ = get_quest_reward_state(interaction.user.id)
-    embed = build_quest_embed(interaction.user, quests, base_reward, quest_streak)
-    view = QuestView(quests, base_reward, quest_streak)
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-
-@bot.tree.command(name="achievements", description="Affiche tes succès et trophées sous forme de carte graphique MEE6")
-async def achievements(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    user_id = interaction.user.id
-
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT achievement_key, tier FROM user_achievements WHERE user_id = ?", (user_id,))
-        unlocked = {row[0]: row[1] for row in cursor.fetchall()}
-
-    img_buf = await generate_mee6_profile_card(interaction.user, unlocked)
-    file = discord.File(fp=img_buf, filename="achievements_profile.png")
-
-    view = AchievementProfileView(interaction.user, unlocked)
-    await interaction.followup.send(file=file, view=view, ephemeral=True)
-
-
-@bot.tree.command(name="work", description="Gagne un peu d'argent en travaillant")
-async def work(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=False)
-    user_id = interaction.user.id
-    retry_after = check_cooldown_redis(user_id, "work", 3600)
-    if retry_after > 0:
-        minutes, seconds = divmod(retry_after, 60)
-        await interaction.followup.send(
-            f"⏳ Tu dois attendre **{minutes} min et {seconds} sec** avant de pouvoir"
-            " travailler à nouveau.",
-            ephemeral=True,
-        )
-        return
-
-    if random.randint(1, 10) == 1:
-        await interaction.followup.send(
-            "🏛️ **Contrôle URSSAF !** Zéro déclaré , zéro pointé."
-        )
-        return
-
-    if random.randint(1, 10) == 1:
-        await interaction.followup.send(
-            "🏛️ **Inspection du travail !** Ton patron ne t'a pas déclaré, tu n'es donc pas payé."
-        )
-        return
-
-    gain = random.randint(100, 500)
-    update_wallet(user_id, gain)
-    update_quest_progress(user_id, "work_done", 1)
-    update_quest_progress_v2(user_id, "work_done", 1)
-    track_work(user_id)
-    await check_and_unlock_achievements(user_id, bot_client=bot)
-
-    await send_public_log(
-        content=f"💼 **{interaction.user.display_name}** a travaillé et gagné **{format_currency(gain)}** !"
-    )
-
-    jobs = [
-        f"Tu as réparé le PC d'un voisin et gagné **{format_currency(gain)}** !",
-        f"Tu as modéré le serveur Discord toute la journée et reçu une prime de **{format_currency(gain)}** !",
-        f"Tu as gagné un petit tournoi de cartes et empoché **{format_currency(gain)}** !",
-        f"Tu as monté un canapé au 6ème sans ascenseur pour **{format_currency(gain)}** !",
-        f"Tu as passé la nuit à effacer les preuves d'une gaffe monumentale d'un modo saoul pour **{format_currency(gain)}** !",
-        f"Tu as fait du chantage à un modo en menaçant de leak ses pires audios et il t'a payé **{format_currency(gain)}** !",
-        f"Tu as livré les pizzas dans le quartier pour **{format_currency(gain)}** !",
-        f"Tu as tondu la pelouse du voisin pour **{format_currency(gain)}** !",
-        f"Tu as fait le service du midi dans un restaurant bondé pour **{format_currency(gain)}** !",
-        f"Tu as nettoyé les vitres du bureau local pour **{format_currency(gain)}** !",
-    ]
-    await interaction.followup.send(random.choice(jobs), ephemeral=True)
-
-
-@bot.tree.command(name="pay", description="Envoie de l'argent à un autre membre")
-async def pay(interaction: discord.Interaction, receiver: discord.Member, amount: int):
-    await interaction.response.defer(ephemeral=True)
-    if amount <= 0:
-        return await interaction.followup.send("❌ Montant invalide.", ephemeral=True)
-
-    sender_wallet, _, _, _, _, _, _, _, _ = get_user_cached(interaction.user.id)
-    if sender_wallet < amount:
-        return await interaction.followup.send("❌ Solde insuffisant.", ephemeral=True)
-
-    update_wallet(interaction.user.id, -amount)
-    update_wallet(receiver.id, amount)
-    update_quest_progress(interaction.user.id, "pay_sent", 1)
-    update_quest_progress_v2(interaction.user.id, "pay_sent", 1)
-    track_pay_sent(interaction.user.id)
-    
-    await send_public_log(
-        content=f"💸 **{interaction.user.display_name}** a envoyé **{format_currency(amount)}** à {receiver.display_name} !"
-    )
-    
-    await interaction.followup.send(f"💸 {interaction.user.mention} ➔ **{format_currency(amount)}** à {receiver.mention} !", ephemeral=True)
-
-
-@bot.tree.command(name="setup", description="[ADMIN] Configure les salons des PNJ")
-@app_commands.checks.has_permissions(administrator=True)
-@app_commands.choices(ai_type=[
-    app_commands.Choice(name="Tous les PNJ (Carrefour)", value="all"),
-    app_commands.Choice(name="Banque (DAB)", value="banque"),
-    app_commands.Choice(name="Taverne (Jim)", value="taverne"),
-    app_commands.Choice(name="Crime (John)", value="crime"),
-    app_commands.Choice(name="Bookmaker (Brook)", value="brook"),
-    app_commands.Choice(name="Arene (Bob)", value="arene"),
-    app_commands.Choice(name="Marchand (Tom)", value="marchand"),
-    app_commands.Choice(name="Troubadour (Guillaume)", value="troubadour"),
-    app_commands.Choice(name="Succes", value="achievements"),
-    app_commands.Choice(name="Quetes quotidiennes", value="quetes")
-])
-async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.TextChannel):
-    await interaction.response.defer(ephemeral=True)
-    guild_id = interaction.guild.id
-
-    if ai_type == "all":
-        await interaction.followup.send(f"✅ Le Carrefour des PNJ a bien été déployé dans {salon.mention} !", ephemeral=True)
-
-        if os.path.exists("assets/jim.png"):
-            file_jim = discord.File("assets/jim.png", filename="jim.png")
-            embed_jim = discord.Embed(
-                description=(
-                    "🍺 **Jim le Tavernier**\n"
-                    "*(S'essuie les mains sur un torchon taché)* Bienvenue dans ma taverne, voyageur ! Installe-toi près de l'âtre, commande une bonne bière fraîche, ou tente ta chance aux jeux de hasard si le cœur t'en dit."
-                ),
-                color=0xD35400
-            )
-            embed_jim.set_image(url="attachment://jim.png")
-            await salon.send(embed=embed_jim, file=file_jim, view=JimTavernView())
-        else:
-            embed_jim = discord.Embed(
-                description=(
-                    "🍺 **Jim le Tavernier**\n"
-                    "*(S'essuie les mains sur un torchon taché)* Bienvenue dans ma taverne, voyageur ! Installe-toi près de l'âtre, commande une bonne bière fraîche, ou tente ta chance aux jeux de hasard si le cœur t'en dit."
-                ),
-                color=0xD35400
-            )
-            await salon.send(embed=embed_jim, view=JimTavernView())
-
-        if os.path.exists("assets/john.png"):
-            file_john = discord.File("assets/john.png", filename="john.png")
-            embed_john = discord.Embed(
-                description=(
-                    "🥷 **Ruelle Sombre — JOHN LE BRIGAND**\n"
-                    "*(S'adosse à un mur lépreux, regard fuyant)* T'as l'regard inquiet, l'ami... Tu cherches à te faire un peu d'fric ou à faire disparaître des emmerdes ? Viens pas pleurer si la milice te tombe dessus."
-                ),
-                color=0x2B2D31
-            )
-            embed_john.set_image(url="attachment://john.png")
-            await salon.send(embed=embed_john, file=file_john, view=JohnCrimeView())
-        else:
-            embed_john = discord.Embed(
-                description=(
-                    "🥷 **Ruelle Sombre — JOHN LE BRIGAND**\n"
-                    "*(S'adosse à un mur lépreux, regard fuyant)* T'as l'regard inquiet, l'ami... Tu cherches à te faire un peu d'fric ou à faire disparaître des emmerdes ? Viens pas pleurer si la milice te tombe dessus."
-                ),
-                color=0x2B2D31
-            )
-            await salon.send(embed=embed_john, view=JohnCrimeView())
-
-        if os.path.exists("assets/bob.png"):
-            file_bob = discord.File("assets/bob.png", filename="bob.png")
-            embed_bob = discord.Embed(
-                description=(
-                    "🏟️ **L'Arène des Combats — BOB LE MAÎTRE D'ARME**\n"
-                    "*(Affûtant une longue épée sur une meule de pierre)* Bienvenue dans l'arène, guerrier ! Ici, on teste sa bravoure et son fer. Misez vos deniers et montrez-moi de quoi vous êtes capable !"
-                ),
-                color=0x992D22
-            )
-            embed_bob.set_image(url="attachment://bob.png")
-            await salon.send(embed=embed_bob, file=file_bob, view=BobArenaView())
-        else:
-            embed_bob = discord.Embed(
-                description=(
-                    "🏟️ **L'Arène des Combats — BOB LE MAÎTRE D'ARME**\n"
-                    "*(Affûtant une longue épée sur une meule de pierre)* Bienvenue dans l'arène, guerrier ! Ici, on teste sa bravoure et son fer. Misez vos deniers et montrez-moi de quoi vous êtes capable !"
-                ),
-                color=0x992D22
-            )
-            await salon.send(embed=embed_bob, view=BobArenaView())
-
-        odds = generate_brook_odds()
-        if os.path.exists("assets/brook.png"):
-            file_brook = discord.File("assets/brook.png", filename="brook.png")
-            embed_brook = discord.Embed(
-                description=(
-                    "📜 **Guichet des Paris — BROOK**\n"
-                    f"*(Tient un carnet de notes rempli de chiffres)* Bienvenue chez **Brook** ! Les cotes ont varié pour ce tour. "
-                    f"Clique sur ton cheval favori pour lancer la course animée : Canabis (x{odds[1]}), Jolly Jumper (x{odds[2]}), Pégase (x{odds[3]}) ou Petit Tonnerre (x{odds[4]})."
-                ),
-                color=0x1ABC9C
-            )
-            embed_brook.set_image(url="attachment://brook.png")
-            await salon.send(embed=embed_brook, file=file_brook, view=BrookBookmakerView(odds))
-        else:
-            embed_brook = discord.Embed(
-                description=(
-                    "📜 **Guichet des Paris — BROOK**\n"
-                    f"*(Tient un carnet de notes rempli de chiffres)* Bienvenue chez **Brook** ! Les cotes ont varié pour ce tour. "
-                    f"Clique sur ton cheval favori pour lancer la course animée : Canabis (x{odds[1]}), Jolly Jumper (x{odds[2]}), Pégase (x{odds[3]}) ou Petit Tonnerre (x{odds[4]})."
-                ),
-                color=0x1ABC9C
-            )
-            await salon.send(embed=embed_brook, view=BrookBookmakerView(odds))
-
-        embed_marchand = discord.Embed(
-            title="✨ Bienvenue au Salon du Shop !",
-            description=(
-                "🦊 **Tom le Marchand** est installé ici en permanence.\n\n"
-                "👉 **Clique sur le bouton ci-dessous** pour engager la discussion avec lui !"
-            ),
-            color=discord.Color.gold()
-        )
-        embed_marchand.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
-        await salon.send(embed=embed_marchand, view=PersistentMerchantView())
-
-        embed_troubadour = discord.Embed(
-            title="🪕 Guillaume le Troubadour",
-            description=(
-                "✨ **Guillaume** est arrivé pour conter les épopées de vos voyages.\n\n"
-                "👉 **Clique sur le bouton ci-dessous** pour lui parler et lui donner vos reliques d'épisodes !"
-            ),
-            color=discord.Color.purple()
-        )
-        embed_troubadour.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
-        await salon.send(embed=embed_troubadour, view=PersistentTroubadourView())
+        update_wallet(user_id, -50)
+        beers_today += 1
+        update_quest_progress(user_id, "beer_drunk", 1)
+        update_quest_progress_v2(user_id, "beer_drunk", 1)
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT OR REPLACE INTO ai_channels (guild_id, ai_type, channel_id) VALUES (?, ?, ?)",
-                (guild_id, "brook", salon.id)
+                "UPDATE users SET beers_today = ?, last_beer_date = ? WHERE user_id = ?",
+                (beers_today, last_beer_date, user_id)
             )
             conn.commit()
-        return
 
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO ai_channels (guild_id, ai_type, channel_id) VALUES (?, ?, ?)",
-            (guild_id, ai_type, salon.id)
+        if REDIS_AVAILABLE and redis_client:
+            redis_client.delete(f"user:{user_id}")
+
+        await check_and_unlock_achievements(user_id, bot_client=bot)
+
+        events = [
+            ("gain", 200, f"🍻 Tu as passé une excellente soirée et gagné à un jeu de dés clandestin ! +**{format_currency(200)}**"),
+            ("gain", 100, f"🍻 Tu as bu un coup avec des marchands, ils t'ont offert des babioles revendues. +**{format_currency(100)}**"),
+            ("loss", 50, f"💤 Tu t'es endormi sur une table... Quelqu'un t'a fait les poches ! -**{format_currency(50)}**"),
+            ("loss", 80, f"💥 En te levant d'un coup un peu trop sec, tu bouscules un client et dois payer pour casser sa chope ! -**{format_currency(80)}**"),
+            ("neutral", 0, f"🍖 Jim t'a servi une pinte bien fraîche et un ragoût maison. Santé !"),
+        ]
+
+        event_type, amount, outcome = random.choice(events)
+        if event_type == "gain":
+            update_wallet(user_id, amount)
+        elif event_type == "loss":
+            current_wallet, _, _, _, _, _, _, _, _ = get_user(user_id)
+            actual_loss = min(amount, current_wallet)
+            if actual_loss > 0:
+                update_wallet(user_id, -actual_loss)
+
+        await send_public_log(
+            content=f"🍺 **{interaction.user.display_name}** a commandé une pinte chez Jim ! (#{beers_today}/5) {outcome}"
         )
-        conn.commit()
 
-    if ai_type == "achievements":
-        await interaction.followup.send(f"✅ Le salon des succès débloqués a bien été défini sur {salon.mention} !", ephemeral=True)
+        await interaction.followup.send(f"🪵 **[JIM LE TAVERNIER]** (Pinte #{beers_today}/5) {outcome}", ephemeral=True)
+
+    @ui.button(label="Jeux de la Taverne", style=discord.ButtonStyle.success, emoji="🎲", custom_id="jim_games")
+    async def games_hub(self, interaction: discord.Interaction, button: ui.Button):
         embed = discord.Embed(
-            title="🏆 Hall des Succès - Actif",
-            description="Ce salon affichera désormais en direct les bannières graphiques de succès débloqués par les membres du serveur !",
-            color=discord.Color.gold()
+            title="🎲 Coin des Jeux de la Taverne",
+            description="Choisis un jeu ci-dessous pour lancer une partie avec une mise :",
+            color=discord.Color.dark_orange()
         )
-        await salon.send(embed=embed)
+        await interaction.response.send_message(embed=embed, view=TavernierGamesView(), ephemeral=True)
 
-    elif ai_type == "banque":
-        await interaction.followup.send(f"✅ Le guichet de la banque a pris ses fonctions dans {salon.mention} avec style !", ephemeral=True)
+    @ui.button(label="Défier un joueur (Duel)", style=discord.ButtonStyle.danger, emoji="⚔️", custom_id="jim_duel")
+    async def duel_hub(self, interaction: discord.Interaction, button: ui.Button):
         embed = discord.Embed(
-            title="🏦 Banque des IV Sceaux",
-            description=(
-                "*(Un grincement lourd résonne dans la salle forte)*\n\n"
-                "Bienvenue au guichet automatique de la **Banque des IV Sceaux**.\n"
-                "Gérez vos avoirs en toute sécurité, déposez vos liquidités ou effectuez des retraits "
-                "pour alimenter votre portefeuille avant de vous aventurer dans les jeux."
-            ),
-            color=0x34495E
+            title="⚔️ Coin des Duels de la Taverne",
+            description="Choisis le type de jeu pour ton duel face à un autre habitué :",
+            color=discord.Color.dark_red()
         )
-        embed.set_footer(text="Banque des IV Sceaux • Service Financier Permanent")
-        if os.path.exists("assets/bank.png"):
-            file_bank = discord.File("assets/bank.png", filename="bank.png")
-            embed.set_image(url="attachment://bank.png")
-            await salon.send(embed=embed, file=file_bank, view=BankView())
-        else:
-            await salon.send(embed=embed, view=BankView())
-
-    elif ai_type == "taverne":
-        await interaction.followup.send(f"✅ Jim le tavernier a pris ses fonctions dans {salon.mention} avec style !", ephemeral=True)
-        embed = discord.Embed(
-            description=(
-                "🍺 **Jim le Tavernier**\n"
-                "*(S'essuie les mains sur un torchon taché)* Bienvenue dans ma taverne, voyageur ! Installe-toi près de l'âtre, commande une bonne bière fraîche, ou tente ta chance aux jeux de hasard si le cœur t'en dit."
-            ),
-            color=0xD35400
-        )
-        if os.path.exists("assets/jim.png"):
-            file_jim = discord.File("assets/jim.png", filename="jim.png")
-            embed.set_image(url="attachment://jim.png")
-            await salon.send(embed=embed, file=file_jim, view=JimTavernView())
-        else:
-            await salon.send(embed=embed, view=JimTavernView())
-
-    elif ai_type == "crime":
-        await interaction.followup.send(f"✅ John le brigand rôde désormais dans {salon.mention} avec style !", ephemeral=True)
-        embed = discord.Embed(
-            description=(
-                "🥷 **Ruelle Sombre — JOHN LE BRIGAND**\n"
-                "*(S'adosse à un mur lépreux, regard fuyant)* T'as l'regard inquiet, l'ami... Tu cherches à te faire un peu d'fric ou à faire disparaître des emmerdes ? Viens pas pleurer si la milice te tombe dessus."
-            ),
-            color=0x2B2D31
-        )
-        if os.path.exists("assets/john.png"):
-            file_john = discord.File("assets/john.png", filename="john.png")
-            embed.set_image(url="attachment://john.png")
-            await salon.send(embed=embed, file=file_john, view=JohnCrimeView())
-        else:
-            await salon.send(embed=embed, view=JohnCrimeView())
-
-    elif ai_type == "brook":
-        await interaction.followup.send(f"✅ Brook la bookmakeuse a ouvert son guichet dans {salon.mention} avec style !", ephemeral=True)
-        odds = generate_brook_odds()
-        embed = discord.Embed(
-            description=(
-                "📜 **Guichet des Paris — BROOK**\n"
-                f"*(Tient un carnet de notes rempli de chiffres)* Bienvenue chez **Brook** ! Les cotes ont varié pour ce tour. "
-                f"Clique sur ton cheval favori pour lancer la course animée : Canabis (x{odds[1]}), Jolly Jumper (x{odds[2]}), Pégase (x{odds[3]}) ou Petit Tonnerre (x{odds[4]})."
-            ),
-            color=0x1ABC9C
-        )
-        if os.path.exists("assets/brook.png"):
-            file_brook = discord.File("assets/brook.png", filename="brook.png")
-            embed.set_image(url="attachment://brook.png")
-            await salon.send(embed=embed, file=file_brook, view=BrookBookmakerView(odds))
-        else:
-            await salon.send(embed=embed, view=BrookBookmakerView(odds))
-
-    elif ai_type == "arene":
-        embed = discord.Embed(
-            description=(
-                "🏟️ **L'Arène des Combats — BOB LE MAÎTRE D'ARME**\n"
-                "*(Affûtant une longue épée sur une meule de pierre)* Bienvenue dans l'arène, guerrier ! Ici, on teste sa bravoure et son fer. Misez vos deniers et montrez-moi de quoi vous êtes capable !"
-            ),
-            color=0x992D22
-        )
-        if os.path.exists("assets/bob.png"):
-            file_bob = discord.File("assets/bob.png", filename="bob.png")
-            embed.set_image(url="attachment://bob.png")
-            await salon.send(embed=embed, file=file_bob, view=BobArenaView())
-        else:
-            await salon.send(embed=embed, view=BobArenaView())
-        await interaction.followup.send(f"✅ Bob le maître d'arme a dressé son arène dans {salon.mention} avec panache !", ephemeral=True)
-
-    elif ai_type == "marchand":
-        embed = discord.Embed(
-            title="✨ Bienvenue au Salon du Shop !",
-            description=(
-                "🦊 **Tom le Marchand** est installé ici en permanence.\n\n"
-                "👉 **Clique sur le bouton ci-dessous** pour engager la discussion avec lui !"
-            ),
-            color=discord.Color.gold()
-        )
-        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
-        await salon.send(embed=embed, view=PersistentMerchantView())
-        await interaction.followup.send(f"✅ Tom le Marchand a été installé dans {salon.mention} avec succès !", ephemeral=True)
-
-    elif ai_type == "troubadour":
-        embed = discord.Embed(
-            title="🪕 Guillaume le Troubadour",
-            description=(
-                "✨ **Guillaume** est arrivé pour conter les épopées de vos voyages.\n\n"
-                "👉 **Clique sur le bouton ci-dessous** pour lui parler et lui donner vos reliques d'épisodes !"
-            ),
-            color=discord.Color.purple()
-        )
-        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
-        await salon.send(embed=embed, view=PersistentTroubadourView())
-        await interaction.followup.send(f"✅ Guillaume le Troubadour a été installé dans {salon.mention} avec succès !", ephemeral=True)
-
-    elif ai_type == "quetes":
-        await interaction.followup.send(f"✅ Le panneau des quêtes a été installé dans {salon.mention} avec succès !", ephemeral=True)
-        
-        quests = get_public_quests()
-        
-        embed = discord.Embed(
-            title=f"📋 Quêtes du Jour",
-            description="**8 quêtes sont à valider aujourd'hui !**\n\nTermine toutes les quêtes pour gagner ta récompense.\nClique sur le bouton ci-dessous pour suivre ta progression.",
-            color=discord.Color.gold()
-        )
-        
-        for i, q in enumerate(quests, 1):
-            embed.add_field(
-                name=f"{q['label']}",
-                value=f"{q['desc']}\n`⏳ À valider`",
-                inline=False
-            )
-        
-        embed.set_footer(text=f"Quêtes du {_today_str()} • Récompense : 500$")
-        
-        msg = await salon.send(embed=embed, view=PublicQuestsView())
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO quest_channels (guild_id, channel_id, message_id) VALUES (?, ?, ?)",
-            (guild_id, salon.id, msg.id)
-        )
-        conn.commit()
-        conn.close()
+        await interaction.response.send_message(embed=embed, view=TavernDuelChoiceView(), ephemeral=True)
 
 
-@bot.tree.command(name="add-money", description="[ADMIN] Ajouter de l'argent")
-@app_commands.checks.has_permissions(administrator=True)
-async def add_money(interaction: discord.Interaction, membre: discord.Member, montant: int):
-    await interaction.response.defer(ephemeral=True)
-    update_wallet(membre.id, montant)
-    await check_and_unlock_achievements(membre.id, bot_client=bot)
-    await interaction.followup.send(f"💰 **{format_currency(montant)}** ajoutés à {membre.mention} !")
-
-
-@bot.tree.command(name="remove-money", description="[ADMIN] Retirer de l'argent du portefeuille ou de la banque d'un joueur")
-@app_commands.checks.has_permissions(administrator=True)
-@app_commands.choices(compte=[
-    app_commands.Choice(name="Portefeuille", value="wallet"),
-    app_commands.Choice(name="Banque", value="bank"),
-])
-async def remove_money(interaction: discord.Interaction, membre: discord.Member, compte: str, montant: int):
-    await interaction.response.defer(ephemeral=True)
-    if montant <= 0:
-        return await interaction.followup.send("❌ Le montant doit être supérieur à 0.", ephemeral=True)
-
-    get_user(membre.id)
-
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        if compte == "wallet":
-            cursor.execute(
-                "UPDATE users SET wallet = MAX(0, COALESCE(wallet, 0) - ?) WHERE user_id = ?",
-                (montant, membre.id),
-            )
-        else:
-            cursor.execute(
-                "UPDATE users SET bank = MAX(0, COALESCE(bank, 0) - ?) WHERE user_id = ?",
-                (montant, membre.id),
-            )
-        conn.commit()
-    
-    invalidate_user_cache(membre.id)
-
-    wallet, bank, _, _, _, _, _, _, _ = get_user_cached(membre.id)
-    compte_label = "portefeuille" if compte == "wallet" else "bank"
-    embed = discord.Embed(
-        title="💸 Retrait Administrateur",
-        description=(
-            f"**{format_currency(montant)}** retirés du **{compte_label}** de {membre.mention}.\n\n"
-            f"Nouveau solde — Portefeuille : **{format_currency(wallet)}** | Banque : **{format_currency(bank)}**"
-        ),
-        color=discord.Color.red()
-    )
-    await interaction.followup.send(embed=embed)
-
-
-@bot.tree.command(name="reset-cooldowns", description="[ADMIN] Réinitialise les timers")
-@app_commands.checks.has_permissions(administrator=True)
-async def reset_cooldowns(interaction: discord.Interaction, membre: discord.Member):
-    await interaction.response.defer(ephemeral=True)
-    clear_cooldown_redis(membre.id)
-    await interaction.followup.send(f"⏳ Cooldowns réinitialisés pour {membre.mention}.", ephemeral=True)
-
-
-@bot.tree.command(name="toggle-cooldowns", description="[ADMIN] Active ou désactive globalement tous les cooldowns (mode test)")
-@app_commands.checks.has_permissions(administrator=True)
-async def toggle_cooldowns(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    global TEST_MODE_ENABLED
-    TEST_MODE_ENABLED = not TEST_MODE_ENABLED
-    if TEST_MODE_ENABLED:
-        embed = discord.Embed(
-            title="🛠️ Mode Test Activé",
-            description="Les cooldowns de toutes les commandes et interactions sont désormais **désactivés**.",
-            color=discord.Color.green()
-        )
-    else:
-        embed = discord.Embed(
-            title="🛠️ Mode Test Désactivé",
-            description="Le fonctionnement normal des cooldowns a été **rétabli**.",
-            color=discord.Color.red()
-        )
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-# ==========================================
-# 10. JEUX DE CASINO - AVEC TRACKING DES ACHIEVEMENTS
-# ==========================================
-
-class BlackjackGame:
-    def __init__(self, user_id: int, bet: int):
-        self.user_id = user_id
-        self.bet = bet
-        self.deck = self.create_deck()
-        self.player_hand = [self.draw_card(), self.draw_card()]
-        self.dealer_hand = [self.draw_card(), self.draw_card()]
-
-    def create_deck(self):
-        suits = ["♠️", "♥️", "♦️", "♣️"]
-        ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
-        deck = [{"rank": r, "suit": s} for s in suits for r in ranks]
-        random.shuffle(deck)
-        return deck
-
-    def draw_card(self):
-        return self.deck.pop()
-
-    @staticmethod
-    def calculate_score(hand):
-        score = 0
-        aces = 0
-        for card in hand:
-            r = card["rank"]
-            if r in ["J", "Q", "K"]:
-                score += 10
-            elif r == "A":
-                aces += 1
-                score += 11
-            else:
-                score += int(r)
-        while score > 21 and aces:
-            score -= 10
-            aces -= 1
-        return score
-
-    @staticmethod
-    def format_hand(hand, hide_second=False):
-        if hide_second:
-            return f"[{hand[0]['rank']}{hand[0]['suit']}] [?]"
-        return " ".join([f"[{c['rank']}{c['suit']}]" for c in hand])
-
-
-class BlackjackView(ui.View):
-    def __init__(self, game: BlackjackGame):
+class TavernDuelChoiceView(ui.View):
+    def __init__(self):
         super().__init__(timeout=60)
-        self.game = game
+
+    @ui.button(label="Dés du Destin", style=discord.ButtonStyle.primary, emoji="🎲", custom_id="jim_duel_choice_dice")
+    async def choice_dice(self, interaction: discord.Interaction, button: ui.Button):
+        embed = discord.Embed(
+            title="⚔️ Duel de Dés - Choix de l'adversaire",
+            description="Sélectionne le joueur à affronter dans le menu déroulant ci-dessous :",
+            color=discord.Color.orange()
+        )
+        await interaction.response.send_message(embed=embed, view=TavernDuelSelectView("dice"), ephemeral=True)
+
+    @ui.button(label="Pierre-Feuille-Ciseaux", style=discord.ButtonStyle.secondary, emoji="✂️", custom_id="jim_duel_choice_pfc")
+    async def choice_pfc(self, interaction: discord.Interaction, button: ui.Button):
+        embed = discord.Embed(
+            title="⚔️ Duel PFC - Choix de l'adversaire",
+            description="Sélectionne le joueur à affronter dans le menu déroulant ci-dessous :",
+            color=discord.Color.orange()
+        )
+        await interaction.response.send_message(embed=embed, view=TavernDuelSelectView("pfc"), ephemeral=True)
+
+
+class TavernDuelSelectView(ui.View):
+    def __init__(self, game_type: str):
+        super().__init__(timeout=60)
+        self.add_item(TavernDuelSelect(game_type))
+
+
+class TavernDuelSelect(ui.UserSelect):
+    def __init__(self, game_type: str):
+        super().__init__(
+            placeholder="Choisis ton adversaire pour le duel...",
+            min_values=1,
+            max_values=1,
+            custom_id=f"jim_duel_select_{game_type}"
+        )
+        self.game_type = game_type
+
+    async def callback(self, interaction: discord.Interaction):
+        opponent = self.values[0]
+        if opponent.id == interaction.user.id:
+            return await interaction.response.send_message("❌ Tu ne peux pas te défier toi-même !", ephemeral=True)
+        if opponent.bot:
+            return await interaction.response.send_message("❌ Tu ne peux pas défier un bot !", ephemeral=True)
+
+        await interaction.response.send_modal(TavernDuelBetModal(opponent, self.game_type))
+
+
+class TavernDuelBetModal(ui.Modal, title="⚔️ Tavernier - Configuration du Duel"):
+    bet_input = ui.TextInput(label="Montant de la mise", placeholder="Ex: 100", required=True, max_length=6)
+
+    def __init__(self, opponent: discord.Member, game_type: str):
+        super().__init__()
+        self.opponent = opponent
+        self.game_type = game_type
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=False)
+        try:
+            bet = int(self.bet_input.value)
+        except ValueError:
+            return await interaction.followup.send("❌ Veuillez entrer un nombre entier valide.", ephemeral=True)
+
+        if self.opponent.id == interaction.user.id:
+            return await interaction.followup.send("❌ Vous ne pouvez pas vous affronter vous-même !", ephemeral=True)
+        if self.opponent.bot:
+            return await interaction.followup.send("❌ Vous ne pouvez pas affronter un bot !", ephemeral=True)
+        if bet <= 0:
+            return await interaction.followup.send("❌ La mise doit être supérieure à 0 $ !", ephemeral=True)
+        if bet > MAX_BET:
+            return await interaction.followup.send(f"❌ La mise maximale autorisée est de **{MAX_BET} $** !", ephemeral=True)
+
+        wallet_chal, _, _, _, _, _, _, _, _ = get_user(interaction.user.id)
+        if wallet_chal < bet:
+            return await interaction.followup.send("❌ Solde insuffisant dans votre portefeuille !", ephemeral=True)
+
+        wallet_opp, _, _, _, _, _, _, _, _ = get_user(self.opponent.id)
+        if wallet_opp < bet:
+            return await interaction.followup.send(f"❌ {self.opponent.mention} n'a pas assez d'argent dans son portefeuille pour accepter cette mise.", ephemeral=True)
+
+        view = DuelAcceptView(interaction.user, self.opponent, self.game_type, bet, from_jim=True, interaction_ref=interaction)
+        
+        embed = discord.Embed(
+            title="⚔️ DÉFI DE DUEL (TAVERNE)",
+            description=(
+                f"{interaction.user.mention} défie {self.opponent.mention} à un duel de **{self.game_type}** sous l'œil de Jim !\n\n"
+                f"💰 **Mise en jeu** : `{format_currency(bet)}` par joueur\n\n"
+                f"{self.opponent.mention}, acceptez-vous ce défi ?\n\n"
+                f"⏰ Vous avez **30 secondes** pour répondre !"
+            ),
+            color=discord.Color.dark_red()
+        )
+        view.public_message = await send_public_log(embed=embed, view=view)
+        if view.public_message is None:
+            return await interaction.followup.send("❌ Impossible d'envoyer la demande de duel dans le Salon B. Vérifie les permissions du bot.", ephemeral=True)
+        await interaction.followup.send("✅ Demande de duel envoyée dans le Salon B.", ephemeral=True)
+
+
+class DuelAcceptView(ui.View):
+    def __init__(self, challenger: discord.Member, opponent: discord.Member, game_type: str, bet: int, from_jim: bool = True, interaction_ref: discord.Interaction = None):
+        super().__init__(timeout=30)
+        self.challenger = challenger
+        self.opponent = opponent
+        self.game_type = game_type
+        self.bet = bet
+        self.from_jim = from_jim
+        self.interaction_ref = interaction_ref
+        self.public_message = None
+        self.responded = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.game.user_id:
-            await interaction.response.send_message("❌ Ce n'est pas votre partie !", ephemeral=True)
+        if interaction.user.id != self.opponent.id:
+            await interaction.response.send_message("❌ Seul l'adversaire défié peut accepter ou refuser ce duel.", ephemeral=True)
+            return False
+        if self.responded:
+            await interaction.response.send_message("❌ Ce duel a déjà reçu une réponse.", ephemeral=True)
             return False
         return True
 
-    def build_embed(self, title="👑 BLACKJACK", game_over=False, result_message=""):
-        player_score = BlackjackGame.calculate_score(self.game.player_hand)
-        if game_over:
-            dealer_score = BlackjackGame.calculate_score(self.game.dealer_hand)
-            dealer_str = BlackjackGame.format_hand(self.game.dealer_hand)
-        else:
-            dealer_score = "?"
-            dealer_str = BlackjackGame.format_hand(self.game.dealer_hand, hide_second=True)
-
-        table_design = (
-            "```text\n"
-            "┌────────────────────────┐\n"
-            "│      BLACKJACK         │\n"
-            "├────────────────────────┤\n"
-            "│ BANQUE :               │\n"
-            f"│ {dealer_str:<22} │\n"
-            f"│ Score : {str(dealer_score):<14} │\n"
-            "├────────────────────────┤\n"
-            "│ VOUS :                 │\n"
-            f"│ {BlackjackGame.format_hand(self.game.player_hand):<22} │\n"
-            f"│ Score : {str(player_score):<14} │\n"
-            "├────────────────────────┤\n"
-            f"│ Mise: {format_currency(self.game.bet):<16} │\n"
-            "└────────────────────────┘\n"
-            "```"
+    async def on_timeout(self):
+        if self.responded:
+            return
+        
+        for child in self.children:
+            child.disabled = True
+        
+        mock_message = random.choice([
+            "😱 **{opponent}** a eu la trouille et s'est caché !",
+            "🫣 **{opponent}** a préféré sauver sa peau !",
+            "🐔 **{opponent}** a picoré et s'est envolé !",
+            "🏃‍♂️ **{opponent}** a pris ses jambes à son cou !"
+        ]).format(opponent=self.opponent.mention, challenger=self.challenger.mention)
+        
+        location = "la taverne" if self.from_jim else "l'arène"
+        embed = discord.Embed(
+            title="⏰ DUEL EXPIRÉ",
+            description=f"{mock_message}\n\nLe duel à {location} a été automatiquement annulé.",
+            color=discord.Color.dark_red()
         )
-
-        embed = discord.Embed(title=title, description=table_design, color=discord.Color.dark_green() if not game_over else discord.Color.green())
-        if result_message:
-            embed.add_field(name="RÉSULTAT", value=result_message, inline=False)
-        return embed
-
-    @ui.button(label="[ 🃏 Tirer ]", style=discord.ButtonStyle.primary)
-    async def hit(self, interaction: discord.Interaction, button: ui.Button):
-        self.game.player_hand.append(self.game.draw_card())
-        player_score = BlackjackGame.calculate_score(self.game.player_hand)
-
-        if player_score == 21:
-            for child in self.children:
-                child.disabled = True
-            gain = int(self.game.bet * 1.5)
-            update_wallet(self.game.user_id, gain)
-            update_game_stats(self.game.user_id, won=True)
-            update_quest_progress_v2(self.game.user_id, "blackjack_win", 1)
-            track_game_win(self.game.user_id, "blackjack")
-            await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
+        
+        try:
+            if self.public_message:
+                await self.public_message.edit(embed=embed, view=self)
+            elif self.interaction_ref:
+                try:
+                    await self.interaction_ref.edit_original_response(embed=embed, view=self)
+                except Exception:
+                    pass
             
             await send_public_log(
-                content=f"🃏 **{interaction.user.display_name}** a fait un Blackjack ! +**{format_currency(gain)}**"
+                content=f"⏰ **{self.challenger.display_name}** a défié {self.opponent.display_name} mais celui-ci n'a pas répondu à temps ! (30s) 🐔"
             )
-            
-            embed = self.build_embed(game_over=True, result_message=f"🎉 21 ! +{format_currency(gain)}")
-            await interaction.response.edit_message(embed=embed, view=self)
-            self.stop()
-        elif player_score > 21:
-            for child in self.children:
-                child.disabled = True
-            update_wallet(self.game.user_id, -self.game.bet)
-            update_game_stats(self.game.user_id, won=False)
-            
-            await send_public_log(
-                content=f"🃏 **{interaction.user.display_name}** a fait un BUST au Blackjack ! -**{format_currency(self.game.bet)}**"
-            )
-            
-            embed = self.build_embed(game_over=True, result_message=f"💥 BUST ! -{format_currency(self.game.bet)}")
-            await interaction.response.edit_message(embed=embed, view=self)
-            self.stop()
-        else:
-            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        except Exception as e:
+            print(f"❌ Erreur expiration duel : {e}")
 
-    @ui.button(label="[ 🛑 Rester ]", style=discord.ButtonStyle.secondary)
-    async def stand(self, interaction: discord.Interaction, button: ui.Button):
+    @ui.button(label="Accepter le Duel", style=discord.ButtonStyle.success, emoji="✅")
+    async def accept(self, interaction: discord.Interaction, button: ui.Button):
+        wallet_opp, _, _, _, _, _, _, _, _ = get_user(self.opponent.id)
+        wallet_chal, _, _, _, _, _, _, _, _ = get_user(self.challenger.id)
+
+        if wallet_opp < self.bet:
+            return await interaction.response.send_message("❌ Vous n'avez pas assez d'argent dans votre portefeuille pour accepter ce duel.", ephemeral=True)
+        if wallet_chal < self.bet:
+            return await interaction.response.send_message(f"❌ {self.challenger.mention} n'a plus assez d'argent pour honorer le duel.", ephemeral=True)
+
+        self.responded = True
         for child in self.children:
             child.disabled = True
 
-        while BlackjackGame.calculate_score(self.game.dealer_hand) < 17:
-            self.game.dealer_hand.append(self.game.draw_card())
+        update_quest_progress(self.challenger.id, "duel_played", 1)
+        update_quest_progress(self.opponent.id, "duel_played", 1)
 
-        player_score = BlackjackGame.calculate_score(self.game.player_hand)
-        dealer_score = BlackjackGame.calculate_score(self.game.dealer_hand)
+        location = "de la taverne" if self.from_jim else "de l'arène"
+        await send_public_log(
+            content=f"⚔️ **{self.challenger.display_name}** et **{self.opponent.display_name}** s'affrontent dans un duel {location} ! Mise : **{format_currency(self.bet)}**"
+        )
 
-        if dealer_score > 21:
-            gain = self.game.bet
-            update_wallet(self.game.user_id, gain)
-            update_game_stats(self.game.user_id, won=True)
-            update_quest_progress_v2(self.game.user_id, "blackjack_win", 1)
-            track_game_win(self.game.user_id, "blackjack")
-            await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
-            res = f"🎉 Banque > 21 ! +{format_currency(gain)}"
-            
-            await send_public_log(
-                content=f"🃏 **{interaction.user.display_name}** a gagné au Blackjack ! +**{format_currency(gain)}**"
+        if self.game_type == "pfc":
+            view = DuelPFCView(self.challenger, self.opponent, self.bet)
+            embed = discord.Embed(
+                title="⚔️ DUEL PFC EN COURS",
+                description=f"Affrontement entre {self.challenger.mention} et {self.opponent.mention} !\nMise en jeu : **{format_currency(self.bet)}**\n\nChacun doit faire son choix en privé via les boutons ci-dessous :",
+                color=discord.Color.orange()
             )
-        elif player_score > dealer_score:
-            gain = self.game.bet
-            update_wallet(self.game.user_id, gain)
-            update_game_stats(self.game.user_id, won=True)
-            update_quest_progress_v2(self.game.user_id, "blackjack_win", 1)
-            track_game_win(self.game.user_id, "blackjack")
-            await check_and_unlock_achievements(self.game.user_id, bot_client=bot)
-            res = f"🎉 Gagné ! +{format_currency(gain)}"
-            
-            await send_public_log(
-                content=f"🃏 **{interaction.user.display_name}** a gagné au Blackjack ! +**{format_currency(gain)}**"
+            await interaction.response.edit_message(embed=embed, view=view)
+        elif self.game_type == "dice":
+            view = DuelDiceView(self.challenger, self.opponent, self.bet)
+            embed = discord.Embed(
+                title="⚔️ DUEL DÉS EN COURS",
+                description=f"Affrontement entre {self.challenger.mention} et {self.opponent.mention} !\nMise en jeu : **{format_currency(self.bet)}**\n\nCliquez sur le bouton pour lancer vos dés :",
+                color=discord.Color.orange()
             )
-        elif player_score < dealer_score:
-            update_wallet(self.game.user_id, -self.game.bet)
-            update_game_stats(self.game.user_id, won=False)
-            res = "❌ Perdu !"
-            
-            await send_public_log(
-                content=f"🃏 **{interaction.user.display_name}** a perdu au Blackjack ! -**{format_currency(self.game.bet)}**"
-            )
-        else:
-            res = "🤝 Égalité !"
+            await interaction.response.edit_message(embed=embed, view=view)
 
-        embed = self.build_embed(game_over=True, result_message=res)
+    @ui.button(label="Refuser", style=discord.ButtonStyle.danger, emoji="❌")
+    async def decline(self, interaction: discord.Interaction, button: ui.Button):
+        self.responded = True
+        for child in self.children:
+            child.disabled = True
+        embed = discord.Embed(
+            title="⚔️ Duel Refusé",
+            description=f"{self.opponent.mention} a décliné le duel proposé par {self.challenger.mention}.",
+            color=discord.Color.red()
+        )
         await interaction.response.edit_message(embed=embed, view=self)
-        self.stop()
+        await send_public_log(
+            content=f"❌ **{self.opponent.display_name}** a refusé le duel de **{self.challenger.display_name}** !"
+        )
+
+
+class DuelPFCView(ui.View):
+    def __init__(self, challenger: discord.Member, opponent: discord.Member, bet: int):
+        super().__init__(timeout=60)
+        self.challenger = challenger
+        self.opponent = opponent
+        self.bet = bet
+        self.choices = {}
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id not in [self.challenger.id, self.opponent.id]:
+            await interaction.response.send_message("❌ Ce duel ne vous concerne pas !", ephemeral=True)
+            return False
+        if interaction.user.id in self.choices:
+            await interaction.response.send_message("❌ Vous avez déjà fait votre choix !", ephemeral=True)
+            return False
+        return True
+
+    async def process_choice(self, interaction: discord.Interaction, choice: str):
+        self.choices[interaction.user.id] = choice
+        await interaction.response.send_message(f"🔒 Choix enregistré : **{choice}**.", ephemeral=True)
+
+        if len(self.choices) == 2:
+            for child in self.children:
+                child.disabled = True
+
+            c_choice = self.choices[self.challenger.id]
+            o_choice = self.choices[self.opponent.id]
+
+            emaps = {"pierre": "🪨 Pierre", "feuille": "📄 Feuille", "ciseau": "✂️ Ciseau"}
+
+            if c_choice == o_choice:
+                res_text = "🤝 **Égalité !** Personne ne remporte la mise."
+            elif ((c_choice == "pierre" and o_choice == "ciseau") or
+                  (c_choice == "feuille" and o_choice == "pierre") or
+                  (c_choice == "ciseau" and o_choice == "feuille")):
+                update_wallet(self.challenger.id, self.bet)
+                update_wallet(self.opponent.id, -self.bet)
+                update_game_stats(self.challenger.id, won=True)
+                update_game_stats(self.opponent.id, won=False)
+                await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
+                res_text = f"🏆 **Victoire de {self.challenger.mention} !** Il remporte **{format_currency(self.bet)}**."
+                await send_public_log(
+                    content=f"⚔️ **{self.challenger.display_name}** a remporté un duel PFC contre {self.opponent.display_name} ! +**{format_currency(self.bet)}**"
+                )
+            else:
+                update_wallet(self.opponent.id, self.bet)
+                update_wallet(self.challenger.id, -self.bet)
+                update_game_stats(self.opponent.id, won=True)
+                update_game_stats(self.challenger.id, won=False)
+                await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
+                res_text = f"🏆 **Victoire de {self.opponent.mention} !** Il remporte **{format_currency(self.bet)}**."
+                await send_public_log(
+                    content=f"⚔️ **{self.opponent.display_name}** a remporté un duel PFC contre {self.challenger.display_name} ! +**{format_currency(self.bet)}**"
+                )
+
+            embed = discord.Embed(
+                title="⚔️ RÉSULTAT DU DUEL PFC",
+                description=(
+                    f"👤 {self.challenger.mention} a choisi : `{emaps[c_choice]}`\n"
+                    f"👤 {self.opponent.mention} a choisi : `{emaps[o_choice]}`\n\n"
+                    f"{res_text}"
+                ),
+                color=discord.Color.gold()
+            )
+            await interaction.message.edit(embed=embed, view=self)
+
+    @ui.button(label="Pierre", style=discord.ButtonStyle.primary, emoji="🪨")
+    async def fn_pierre(self, interaction: discord.Interaction, button: ui.Button):
+        await self.process_choice(interaction, "pierre")
+
+    @ui.button(label="Feuille", style=discord.ButtonStyle.success, emoji="📄")
+    async def fn_feuille(self, interaction: discord.Interaction, button: ui.Button):
+        await self.process_choice(interaction, "feuille")
+
+    @ui.button(label="Ciseau", style=discord.ButtonStyle.danger, emoji="✂️")
+    async def fn_ciseau(self, interaction: discord.Interaction, button: ui.Button):
+        await self.process_choice(interaction, "ciseau")
+
+
+class DuelDiceView(ui.View):
+    def __init__(self, challenger: discord.Member, opponent: discord.Member, bet: int):
+        super().__init__(timeout=60)
+        self.challenger = challenger
+        self.opponent = opponent
+        self.bet = bet
+        self.rolls = {}
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id not in [self.challenger.id, self.opponent.id]:
+            await interaction.response.send_message("❌ Ce duel ne vous concerne pas !", ephemeral=True)
+            return False
+        if interaction.user.id in self.rolls:
+            await interaction.response.send_message("❌ Vous avez déjà lancé vos dés !", ephemeral=True)
+            return False
+        return True
+
+    @ui.button(label="🎲 Lancer les dés", style=discord.ButtonStyle.primary)
+    async def roll_btn(self, interaction: discord.Interaction, button: ui.Button):
+        d1, d2 = random.randint(1, 6), random.randint(1, 6)
+        total = d1 + d2
+        self.rolls[interaction.user.id] = total
+        await interaction.response.send_message(f"🎲 Vous avez obtenu **{total}** ({d1} + {d2}).", ephemeral=True)
+
+        if len(self.rolls) == 2:
+            for child in self.children:
+                child.disabled = True
+
+            c_score = self.rolls[self.challenger.id]
+            o_score = self.rolls[self.opponent.id]
+
+            if c_score == o_score:
+                res_text = "🤝 **Égalité parfaite !** Les mises sont remboursées."
+            elif c_score > o_score:
+                update_wallet(self.challenger.id, self.bet)
+                update_wallet(self.opponent.id, -self.bet)
+                update_game_stats(self.challenger.id, won=True)
+                update_game_stats(self.opponent.id, won=False)
+                await check_and_unlock_achievements(self.challenger.id, bot_client=bot)
+                res_text = f"🏆 **Victoire de {self.challenger.mention} ({c_score} vs {o_score}) !** Il remporte **{format_currency(self.bet)}**."
+                await send_public_log(
+                    content=f"🎲 **{self.challenger.display_name}** a remporté un duel de dés contre {self.opponent.display_name} ! +**{format_currency(self.bet)}**"
+                )
+            else:
+                update_wallet(self.opponent.id, self.bet)
+                update_wallet(self.challenger.id, -self.bet)
+                update_game_stats(self.opponent.id, won=True)
+                update_game_stats(self.challenger.id, won=False)
+                await check_and_unlock_achievements(self.opponent.id, bot_client=bot)
+                res_text = f"🏆 **Victoire de {self.opponent.mention} ({o_score} vs {c_score}) !** Il remporte **{format_currency(self.bet)}**."
+                await send_public_log(
+                    content=f"🎲 **{self.opponent.display_name}** a remporté un duel de dés contre {self.challenger.display_name} ! +**{format_currency(self.bet)}**"
+                )
+
+            embed = discord.Embed(
+                title="⚔️ RÉSULTAT DU DUEL DÉS",
+                description=(
+                    f"👤 {self.challenger.mention} : `{c_score}`\n"
+                    f"👤 {self.opponent.mention} : `{o_score}`\n\n"
+                    f"{res_text}"
+                ),
+                color=discord.Color.gold()
+            )
+            await interaction.message.edit(embed=embed, view=self)
+
+
+# ==========================================
+# JOHN - BRIGAND
+# ==========================================
+
+class JohnCrimeView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Tenter un Crime", style=discord.ButtonStyle.danger, emoji="🥷", custom_id="john_crime_btn")
+    async def crime_btn(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        user_id = interaction.user.id
+        retry_after = check_cooldown(user_id, "john_crime", 60)
+        if retry_after > 0:
+            minutes, seconds = divmod(retry_after, 60)
+            msg_text = f'🥷 *John* : "Reviens dans **{minutes}m {seconds}s**."'
+            return await interaction.followup.send(msg_text, ephemeral=True)
+
+        success = random.choice([True, False])
+        wallet, _, _, _, _, _, _, _, _ = get_user(user_id)
+        update_quest_progress(user_id, "crime_attempt", 1)
+        update_quest_progress_v2(user_id, "crime_attempt", 1)
+
+        if success:
+            gain = random.randint(300, 1000)
+            update_wallet(user_id, gain)
+            await check_and_unlock_achievements(user_id, bot_client=bot)
+            
+            await send_public_log(
+                content=f"🥷 **{interaction.user.display_name}** a réussi un crime et a gagné **{format_currency(gain)}** !"
+            )
+            
+            await interaction.followup.send(f"🥷 **[JOHN LE BRIGAND]** Joli coup ! Vol réussi. +**{format_currency(gain)}**", ephemeral=True)
+        else:
+            loss = min(random.randint(100, 400), wallet)
+            if loss > 0:
+                update_wallet(user_id, -loss)
+                await send_public_log(
+                    content=f"🚨 **{interaction.user.display_name}** s'est fait prendre par la milice lors d'un crime ! Amende : **{format_currency(loss)}**"
+                )
+                await interaction.followup.send(f"🚨 **[JOHN LE BRIGAND]** La milice t'a repéré ! Amende : -**{format_currency(loss)}**", ephemeral=True)
+            else:
+                await interaction.followup.send("🚨 **[JOHN LE BRIGAND]** Pris la main dans le sac, mais tu es trop pauvre pour payer.", ephemeral=True)
+
+    @ui.button(label="Braquage de la Brinks", style=discord.ButtonStyle.success, emoji="🔐", custom_id="john_vault_btn")
+    async def vault_btn(self, interaction: discord.Interaction, button: ui.Button):
+        user_id = interaction.user.id
+        retry_after = check_cooldown(user_id, "john_vault", 3600)
+        if retry_after > 0:
+            hours, remainder = divmod(retry_after, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            return await interaction.response.send_message(f'🔐 *John* : "Attends **{hours}h {minutes}m {seconds}s**."', ephemeral=True)
+
+        update_quest_progress(user_id, "vault_attempt", 1)
+        update_quest_progress_v2(user_id, "vault_attempt", 1)
+        prize = random.randint(2000, 7500)
+        secret_code = f"{random.randint(0, 9)}{random.randint(0, 9)}{random.randint(0, 9)}{random.randint(0, 9)}"
+
+        embed = discord.Embed(
+            title="🔐 Braquage de la Brinks",
+            description=(
+                "*(John t'amène devant un lourd coffre-fort blindé)*\n\n"
+                f"Le coffre contient **{format_currency(prize)}** !\n"
+                "Tu disposes de **5 tentatives** pour deviner le code.\n"
+                "Attention : si tu échoues, la police te prélève 5% de ton compte bancaire !"
+            ),
+            color=discord.Color.dark_purple()
+        )
+        await interaction.response.send_message(embed=embed, view=BrinksVaultView(prize, 5, secret_code), ephemeral=True)
+
+
+class BrinksVaultView(ui.View):
+    def __init__(self, prize: int, attempts_left: int, secret_code: str):
+        super().__init__(timeout=60)
+        self.prize = prize
+        self.attempts_left = attempts_left
+        self.secret_code = secret_code
+
+    @ui.button(label="Entrer une combinaison", style=discord.ButtonStyle.danger, emoji="🔢", custom_id="brinks_vault_input")
+    async def try_code_btn(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(BrinksVaultModal(self.prize, self.attempts_left, self.secret_code))
+
+
+class BrinksVaultModal(ui.Modal, title="🔒 Coffre de la Brinks - Code à 4 chiffres"):
+    code_input = ui.TextInput(label="Entrer la combinaison (4 chiffres)", placeholder="Ex: 4812", required=True, min_length=4, max_length=4)
+
+    def __init__(self, prize: int, attempts_left: int, secret_code: str):
+        super().__init__()
+        self.prize = prize
+        self.attempts_left = attempts_left
+        self.secret_code = secret_code
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        user_input = self.code_input.value
+        if not user_input.isdigit() or len(user_input) != 4:
+            return await interaction.followup.send("❌ Le code doit être 4 chiffres !", ephemeral=True)
+
+        user_id = interaction.user.id
+
+        if user_input == self.secret_code:
+            update_wallet(user_id, self.prize)
+            await check_and_unlock_achievements(user_id, bot_client=bot)
+            
+            await send_public_log(
+                content=f"🔐 **{interaction.user.display_name}** a réussi le braquage de la Brinks ! +**{format_currency(self.prize)}**"
+            )
+            
+            embed = discord.Embed(
+                title="🔐 [BRINKS] COFFRE OUVERT !",
+                description=f"🎉 Tu as trouvé la bonne combinaison **{self.secret_code}** !\nTu récupères **{format_currency(self.prize)}** !",
+                color=discord.Color.green()
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        hints = []
+        for i in range(4):
+            if user_input[i] == self.secret_code[i]:
+                hints.append(f"Chiffre {i+1} : **Bien placé**")
+            elif user_input[i] in self.secret_code:
+                hints.append(f"Chiffre {i+1} : **Bon mais mauvais endroit**")
+            else:
+                hints.append(f"Chiffre {i+1} : **Incorrect**")
+
+        self.attempts_left -= 1
+
+        if self.attempts_left > 0:
+            view = BrinksVaultView(self.prize, self.attempts_left, self.secret_code)
+            embed = discord.Embed(
+                title="🔒 [BRINKS] Alarme retentit...",
+                description=(
+                    f"❌ Mauvaise combinaison !\n"
+                    f"Tentatives restantes : **{self.attempts_left}/5**\n\n"
+                    "**Indices :**\n" + "\n".join(hints)
+                ),
+                color=discord.Color.orange()
+            )
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        else:
+            _, bank, _, _, _, _, _, _, _ = get_user(user_id)
+            fine = int(bank * 0.05)
+            if fine > 0:
+                with get_db_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE users SET bank = bank - ? WHERE user_id = ?", (fine, user_id))
+                    conn.commit()
+
+            await send_public_log(
+                content=f"🚨 **{interaction.user.display_name}** s'est fait prendre lors d'un braquage ! Amende : **-{format_currency(fine)}**"
+            )
+
+            embed = discord.Embed(
+                title="🚨 [BRINKS] ARRIVÉE DE LA POLICE !",
+                description=f"💥 Trop de temps perdu ! Les forces de l'ordre débarquent.\nTu t'enfuis mais la police te saisit **-{format_currency(fine)}** !",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ==========================================
+# BOB LE MAITRE D'ARME
+# ==========================================
+
+class BobArenaView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Entrer dans l'Arène (Combattre Bob)", style=discord.ButtonStyle.danger, emoji="⚔️", custom_id="bob_arena_fight")
+    async def fight_btn(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(BetModal("⚔️ Arène - Mise de Combat", run_arena_fight))
+
+
+async def run_arena_fight(interaction: discord.Interaction, bet: int):
+    if not await validate_game_bet(interaction, "arene_fight", bet, cooldown_sec=1800):
+        return
+
+    update_quest_progress(interaction.user.id, "arena_fight", 1)
+    update_quest_progress_v2(interaction.user.id, "arena_fight", 1)
+    
+    await send_public_log(
+        content=f"⚔️ **{interaction.user.display_name}** entre dans l'arène pour affronter Bob ! Mise : **{format_currency(bet)}**"
+    )
+    
+    view = ArenaFightView(interaction.user.id, bet)
+    embed = view.build_embed("Le combat commence !", color=discord.Color.orange())
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+class ArenaFightView(ui.View):
+    def __init__(self, user_id: int, bet: int):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+        self.bet = bet
+        self.player_hp = 100
+        self.bob_hp = 100
+        self.round_count = 0
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Ce n'est pas votre combat !", ephemeral=True)
+            return False
+        return True
+
+    def build_embed(self, status_msg: str, color=discord.Color.red()) -> discord.Embed:
+        desc = (
+            f"⚔️ **DUEL DANS L'ARÈNE** ⚔️\n\n"
+            f"👤 **Votre PV** : `{'❤️' * max(1, int(self.player_hp / 10))}` ({self.player_hp}/100)\n"
+            f"🛡️ **Bob** : `{'🖤' * max(1, int(self.bob_hp / 10))}` ({self.bob_hp}/100)\n\n"
+            f"📜 {status_msg}"
+        )
+        embed = discord.Embed(title="🏟️ Arène des IV Sceaux", description=desc, color=color)
+        embed.set_footer(text=f"Mise : {format_currency(self.bet)}")
+        return embed
+
+    async def process_turn(self, interaction: discord.Interaction, player_move: str):
+        self.round_count += 1
+        
+        if player_move == "heavy":
+            p_dmg = random.randint(18, 32) if random.random() < 0.6 else 0
+            p_text = f"Frappe lourde : **{p_dmg} dégâts** !" if p_dmg > 0 else "Frappe lourde dans le vide !"
+        elif player_move == "fast":
+            p_dmg = random.randint(10, 18)
+            p_text = f"Estoc rapide : **{p_dmg} dégâts** !"
+        else:
+            p_dmg = 0
+            p_text = "Posture défensive."
+
+        self.bob_hp = max(0, self.bob_hp - p_dmg)
+
+        if self.bob_hp <= 0:
+            for child in self.children:
+                child.disabled = True
+            gain = self.bet * 2
+            update_wallet(self.user_id, gain - self.bet)
+            update_game_stats(self.user_id, won=True)
+            await check_and_unlock_achievements(self.user_id, bot_client=bot)
+            
+            await send_public_log(
+                content=f"⚔️ **{interaction.user.display_name}** a vaincu Bob ! +**{format_currency(gain)}**"
+            )
+            
+            embed = self.build_embed(f"{p_text}\n\n🏆 **VICTOIRE !** +**{format_currency(gain)}**", color=discord.Color.green())
+            await interaction.response.edit_message(embed=embed, view=self)
+            return
+
+        bob_move = random.choice(["heavy", "fast", "bash"])
+        if bob_move == "heavy" and player_move != "parry":
+            b_dmg = random.randint(15, 25)
+            b_text = f"Massue de Bob : **-{b_dmg} PV** !"
+        elif bob_move == "fast":
+            b_dmg = random.randint(8, 15)
+            b_text = f"Dague de Bob : **-{b_dmg} PV** !"
+        else:
+            b_dmg = 5 if player_move != "parry" else 0
+            b_text = f"Bouclier de Bob : **-{b_dmg} PV** !" if b_dmg > 0 else "Garde parfaite !"
+
+        self.player_hp = max(0, self.player_hp - b_dmg)
+
+        if self.player_hp <= 0:
+            for child in self.children:
+                child.disabled = True
+            update_wallet(self.user_id, -self.bet)
+            update_game_stats(self.user_id, won=False)
+            
+            await send_public_log(
+                content=f"💀 **{interaction.user.display_name}** a été vaincu par Bob ! -**{format_currency(self.bet)}**"
+            )
+            
+            embed = self.build_embed(f"{p_text}\n{b_text}\n\n💀 **DÉFAITE !** -**{format_currency(self.bet)}**", color=discord.Color.dark_red())
+            await interaction.response.edit_message(embed=embed, view=self)
+            return
+
+        embed = self.build_embed(f"{p_text}\n{b_text}")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @ui.button(label="🪓 Frappe Lourde (60%)", style=discord.ButtonStyle.danger, custom_id="arena_heavy")
+    async def heavy_strike(self, interaction: discord.Interaction, button: ui.Button):
+        await self.process_turn(interaction, "heavy")
+
+    @ui.button(label="🗡️ Estoc Rapide (100%)", style=discord.ButtonStyle.primary, custom_id="arena_fast")
+    async def fast_strike(self, interaction: discord.Interaction, button: ui.Button):
+        await self.process_turn(interaction, "fast")
+
+    @ui.button(label="🛡️ Posture Défensive", style=discord.ButtonStyle.secondary, custom_id="arena_parry")
+    async def parry_stance(self, interaction: discord.Interaction, button: ui.Button):
+        await self.process_turn(interaction, "parry")
+
+
+# ==========================================
+# PMU ET BROOK
+# ==========================================
+
+PMU_ODDS = {1: 3.0, 2: 3.0, 3: 3.0, 4: 3.0}
+
+
+async def run_pmu_game(interaction: discord.Interaction, cheval: int, bet: int):
+    if not await validate_game_bet(interaction, "pmu", bet, cooldown_sec=900):
+        return
+
+    update_quest_progress(interaction.user.id, "pmu_bet", 1)
+    update_quest_progress_v2(interaction.user.id, "pmu_bet", 1)
+    show_anim = get_user_animation_preference(interaction.user.id)
+
+    chevaux = {
+        1: {"nom": "Canabis", "emoji": "🐎"},
+        2: {"nom": "Jolly Jumper", "emoji": "🐴"},
+        3: {"nom": "Pégase", "emoji": "🦄"},
+        4: {"nom": "Petit Tonnerre", "emoji": "🏇"},
+    }
+
+    piste_len = 10
+    positions = {1: 0, 2: 0, 3: 0, 4: 0}
+
+    initial_piste = "🏁 **PMU - Départ !**\n```text\n┌── HIPPODROME ────────┐\n"
+    for cid, data in chevaux.items():
+        initial_piste += f"│#{cid}[{data['emoji']}{'-'*piste_len}]│\n"
+    initial_piste += "└──────────────────────┘\n```"
+
+    await interaction.followup.send(initial_piste, ephemeral=True)
+    anim_manager = AnimatedMessageManager(interaction, show_animation=show_anim)
+
+    while max(positions.values()) < piste_len:
+        await asyncio.sleep(1.0)
+        for c in positions:
+            if positions[c] < piste_len:
+                positions[c] += random.randint(1, 3)
+                if positions[c] > piste_len:
+                    positions[c] = piste_len
+
+        piste_str = "🏁 **PMU - Course...**\n```text\n┌── HIPPODROME ────────┐\n"
+        for cid, data in chevaux.items():
+            p = positions[cid]
+            ligne = "-" * p + data["emoji"] + "-" * (piste_len - p)
+            piste_str += f"│#{cid}[{ligne}]│\n"
+        piste_str += "└──────────────────────┘\n```"
+        await anim_manager.update_animation(new_content=piste_str)
+
+    max_p = max(positions.values())
+    gagnants = [c for c, p in positions.items() if p >= max_p]
+    gagnant = random.choice(gagnants)
+
+    cote = PMU_ODDS[cheval]
+
+    if cheval == gagnant:
+        gain = int(bet * cote)
+        update_wallet(interaction.user.id, gain - bet)
+        update_game_stats(interaction.user.id, won=True)
+        await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
+        res_msg = f"🏆 **[PMU] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné ! +**{format_currency(gain)}**"
+        
+        await send_public_log(
+            content=f"🏇 **{interaction.user.display_name}** a gagné au PMU sur {chevaux[cheval]['nom']} ! +**{format_currency(gain)}**"
+        )
+    else:
+        update_wallet(interaction.user.id, -bet)
+        update_game_stats(interaction.user.id, won=False)
+        res_msg = f"❌ **[PMU] PERDU !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné. -**{format_currency(bet)}**"
+        
+        await send_public_log(
+            content=f"🏇 **{interaction.user.display_name}** a perdu au PMU ! -**{format_currency(bet)}**"
+        )
+
+    final_piste = "🏁 **PMU - Arrivée !**\n```text\n┌── HIPPODROME ────────┐\n"
+    for cid, data in chevaux.items():
+        p = positions[cid]
+        ligne = "-" * p + data["emoji"] + "-" * (piste_len - p)
+        final_piste += f"│#{cid}[{ligne}]│\n"
+    final_piste += f"└──────────────────────┘\n```\n{res_msg}"
+
+    if not show_anim:
+        try:
+            await interaction.edit_original_response(content=final_piste)
+        except discord.HTTPException:
+            pass
+    else:
+        await anim_manager.update_animation(new_content=final_piste)
+
+
+def generate_brook_odds():
+    odds = {
+        1: round(random.uniform(1.3, 5.5), 2),
+        2: round(random.uniform(1.3, 5.5), 2),
+        3: round(random.uniform(1.3, 5.5), 2),
+        4: round(random.uniform(1.3, 5.5), 2)
+    }
+    return odds
+
+
+class BrookBookmakerView(ui.View):
+    def __init__(self, odds: dict):
+        super().__init__(timeout=None)
+        self.odds = odds
+
+        self.horse_1.label = f"Canabis (x{odds[1]})"
+        self.horse_2.label = f"Jolly Jumper (x{odds[2]})"
+        self.horse_3.label = f"Pégase (x{odds[3]})"
+        self.horse_4.label = f"Petit Tonnerre (x{odds[4]})"
+
+    @ui.button(label="Canabis", style=discord.ButtonStyle.primary, emoji="🐎", custom_id="brook_horse_1")
+    async def horse_1(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(BrookPMUBetModal(1, self.odds, panel_message=interaction.message))
+
+    @ui.button(label="Jolly Jumper", style=discord.ButtonStyle.primary, emoji="🐴", custom_id="brook_horse_2")
+    async def horse_2(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(BrookPMUBetModal(2, self.odds, panel_message=interaction.message))
+
+    @ui.button(label="Pégase", style=discord.ButtonStyle.primary, emoji="🦄", custom_id="brook_horse_3")
+    async def horse_3(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(BrookPMUBetModal(3, self.odds, panel_message=interaction.message))
+
+    @ui.button(label="Petit Tonnerre", style=discord.ButtonStyle.primary, emoji="🏇", custom_id="brook_horse_4")
+    async def horse_4(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(BrookPMUBetModal(4, self.odds, panel_message=interaction.message))
+
+
+async def run_brook_pmu_game(interaction: discord.Interaction, horse_choice: int, bet: int, dynamic_odds: dict, panel_message=None):
+    if not await validate_game_bet(interaction, "brook_bet", bet, cooldown_sec=1800):
+        return
+
+    update_quest_progress(interaction.user.id, "pmu_bet", 1)
+    update_quest_progress_v2(interaction.user.id, "pmu_bet", 1)
+    show_anim = get_user_animation_preference(interaction.user.id)
+
+    chevaux = {
+        1: {"nom": "Canabis", "emoji": "🐎"},
+        2: {"nom": "Jolly Jumper", "emoji": "🐴"},
+        3: {"nom": "Pégase", "emoji": "🦄"},
+        4: {"nom": "Petit Tonnerre", "emoji": "🏇"},
+    }
+
+    piste_len = 10
+    positions = {1: 0, 2: 0, 3: 0, 4: 0}
+
+    initial_piste = "🏁 **Brook - Départ !**\n```text\n┌── HIPPODROME ────────┐\n"
+    for cid, data in chevaux.items():
+        initial_piste += f"│#{cid}[{data['emoji']}{'-'*piste_len}]│\n"
+    initial_piste += "└──────────────────────┘\n```"
+
+    course_message = await interaction.followup.send(initial_piste, ephemeral=True, wait=True)
+
+    async def edit_course(content: str):
+        try:
+            await course_message.edit(content=content)
+        except:
+            pass
+
+    weights = [round(10 / dynamic_odds[i], 2) for i in range(1, 5)]
+
+    while max(positions.values()) < piste_len:
+        await asyncio.sleep(1.0)
+        for c in positions:
+            if positions[c] < piste_len:
+                positions[c] += random.randint(1, 3)
+                if positions[c] > piste_len:
+                    positions[c] = piste_len
+
+        piste_str = "🏁 **Brook - Course...**\n```text\n┌── HIPPODROME ────────┐\n"
+        for cid, data in chevaux.items():
+            p = positions[cid]
+            ligne = "-" * p + data["emoji"] + "-" * (piste_len - p)
+            piste_str += f"│#{cid}[{ligne}]│\n"
+        piste_str += "└──────────────────────┘\n```"
+        await edit_course(piste_str)
+
+    max_p = max(positions.values())
+    gagnants = [c for c, p in positions.items() if p >= max_p]
+    gagnant = random.choices(gagnants, weights=[weights[c-1] for c in gagnants], k=1)[0] if len(gagnants) > 1 else gagnants[0]
+
+    cote = dynamic_odds[horse_choice]
+
+    if horse_choice == gagnant:
+        gain = int(bet * cote)
+        update_wallet(interaction.user.id, gain - bet)
+        update_game_stats(interaction.user.id, won=True)
+        await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
+        res_msg = f"🏆 **[BROOK] VICTOIRE !** #{gagnant} ({chevaux[gagnant]['nom']}) ! +**{format_currency(gain)}**"
+        
+        await send_public_log(
+            content=f"🏇 **{interaction.user.display_name}** a gagné chez Brook sur {chevaux[horse_choice]['nom']} ! +**{format_currency(gain)}**"
+        )
+    else:
+        update_wallet(interaction.user.id, -bet)
+        update_game_stats(interaction.user.id, won=False)
+        res_msg = f"❌ **[BROOK] PERDU !** #{gagnant} ({chevaux[gagnant]['nom']}) a gagné. -**{format_currency(bet)}**"
+        
+        await send_public_log(
+            content=f"🏇 **{interaction.user.display_name}** a perdu chez Brook ! -**{format_currency(bet)}**"
+        )
+
+    final_piste = f"🏁 **Brook - Arrivée !**\n```text\n┌── HIPPODROME ────────┐\n"
+    for cid, data in chevaux.items():
+        p = positions[cid]
+        ligne = "-" * p + data["emoji"] + "-" * (piste_len - p)
+        final_piste += f"│#{cid}[{ligne}]│\n"
+    final_piste += f"└──────────────────────┘\n```\n{res_msg}"
+
+    await edit_course(final_piste)
+
+    # Mettre à jour le panneau Brook
+    new_odds = generate_brook_odds()
+    new_embed = discord.Embed(
+        description=(
+            "📜 **Guichet des Paris — BROOK**\n"
+            f"*(Tient un carnet de notes)* Les cotes ont varié ! "
+            f"Canabis (x{new_odds[1]}), Jolly Jumper (x{new_odds[2]}), Pégase (x{new_odds[3]}), Petit Tonnerre (x{new_odds[4]})."
+        ),
+        color=0x1ABC9C
+    )
+
+    try:
+        if panel_message is not None:
+            await panel_message.edit(embed=new_embed, view=BrookBookmakerView(new_odds))
+    except Exception as e:
+        print(f"❌ Erreur mise à jour Brook : {e}")
+
+
+# ==========================================
+# 13. COMMANDES DE JEUX (Raccourcis)
+# ==========================================
+
+async def run_dice_game(interaction: discord.Interaction, bet: int):
+    if not await validate_game_bet(interaction, "dice", bet):
+        return
+    
+    show_anim = get_user_animation_preference(interaction.user.id)
+    mini_dice = {1: "⚀", 2: "⚁", 3: "⚂", 4: "⚃", 5: "⚄", 6: "⚅"}
+    name = interaction.user.display_name.upper()[:10]
+
+    def get_dice_box(d1, d2, p1, p2, status):
+        ds = d1 + d2 if d1 else 0
+        ps = p1 + p2 if p1 else 0
+        return (
+            "```text\n"
+            "┌──────────────────────┐\n"
+            "│    DÉS DU DESTIN     │\n"
+            "├──────────────────────┤\n"
+            f"│ BANQUE : {ds} {mini_dice.get(d1, '?')}{mini_dice.get(d2, '?')}   │\n"
+            f"│ {name:<10}: {ps} {mini_dice.get(p1, '?')}{mini_dice.get(p2, '?')}   │\n"
+            "├──────────────────────┤\n"
+            f"│ {status:<20} │\n"
+            f"│ Mise: {format_currency(bet):<14} │\n"
+            "└──────────────────────┘\n"
+            "```"
+        )
+
+    await interaction.followup.send(get_dice_box(None, None, None, None, "Prêt..."), ephemeral=True)
+    anim_manager = AnimatedMessageManager(interaction, show_animation=show_anim)
+
+    for _ in range(4):
+        await asyncio.sleep(0.5)
+        await anim_manager.update_animation(
+            new_content=get_dice_box(
+                random.randint(1, 6), random.randint(1, 6),
+                random.randint(1, 6), random.randint(1, 6),
+                "Roulent..."
+            )
+        )
+
+    d1, d2 = random.randint(1, 6), random.randint(1, 6)
+    p1, p2 = random.randint(1, 6), random.randint(1, 6)
+    
+    if (p1 + p2) > (d1 + d2):
+        update_wallet(interaction.user.id, bet)
+        update_game_stats(interaction.user.id, won=True)
+        await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
+        status = f"VICTOIRE! +{format_currency(bet)}"
+        await send_public_log(content=f"🎲 **{interaction.user.display_name}** a gagné aux dés ! +**{format_currency(bet)}**")
+    elif (p1 + p2) < (d1 + d2):
+        update_wallet(interaction.user.id, -bet)
+        update_game_stats(interaction.user.id, won=False)
+        status = f"PERDU! -{format_currency(bet)}"
+        await send_public_log(content=f"🎲 **{interaction.user.display_name}** a perdu aux dés ! -**{format_currency(bet)}**")
+    else:
+        status = "ÉGALITÉ !"
+
+    await anim_manager.update_animation(new_content=get_dice_box(d1, d2, p1, p2, status))
+
+
+@bot.tree.command(name="dice", description="Joue aux Dés du Destin")
+async def dice(interaction: discord.Interaction):
+    await interaction.response.send_modal(BetModal("🎲 Dés - Mise", run_dice_game))
+
+
+async def run_roulette_game(interaction: discord.Interaction, bet: int):
+    if not await validate_game_bet(interaction, "roulette", bet):
+        return
+    
+    show_anim = get_user_animation_preference(interaction.user.id)
+    name = interaction.user.display_name.upper()[:10]
+
+    def get_box(num, icon, color, status, choice):
+        return (
+            "```text\n"
+            "┌──────────────────────┐\n"
+            "│       ROULETTE       │\n"
+            "├──────────────────────┤\n"
+            f"│ {name:<10} CHOIX:{choice[:4]} │\n"
+            f"│ ROUE: [{icon} {num:02d} {color[:3].upper()}]   │\n"
+            "├──────────────────────┤\n"
+            f"│ {status:<20} │\n"
+            f"│ Mise: {format_currency(bet):<14} │\n"
+            "└──────────────────────┘\n"
+            "```"
+        )
+
+    # Créer une vue avec les boutons
+    class RouletteView(ui.View):
+        def __init__(self, user_id):
+            super().__init__(timeout=30)
+            self.user_id = user_id
+            self.choice = None
+
+        async def interaction_check(self, interaction):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("❌ Pas votre partie !", ephemeral=True)
+                return False
+            return True
+
+        async def play(self, interaction, choice):
+            self.choice = choice
+            for child in self.children:
+                child.disabled = True
+            
+            number = random.randint(0, 36)
+            color = "vert" if number == 0 else ("rouge" if number % 2 == 0 else "noir")
+            icon = "🟩" if number == 0 else ("🟥" if color == "rouge" else "⬛")
+            
+            await interaction.response.edit_message(
+                content=get_box(number, icon, color, "Tourne...", choice),
+                view=self
+            )
+            
+            anim_manager = AnimatedMessageManager(interaction, show_animation=show_anim)
+            for _ in range(3):
+                await asyncio.sleep(0.5)
+                rn = random.randint(0, 36)
+                rc = "vert" if rn == 0 else ("rouge" if rn % 2 == 0 else "noir")
+                ri = "🟩" if rn == 0 else ("🟥" if rc == "rouge" else "⬛")
+                await anim_manager.update_animation(
+                    new_content=get_box(rn, ri, rc, "Ralentit...", choice)
+                )
+            
+            if choice == color:
+                mult = 14 if color == "vert" else 2
+                reward = bet * mult
+                update_wallet(interaction.user.id, reward - bet)
+                update_game_stats(interaction.user.id, won=True)
+                await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
+                status = f"GAGNÉ! +{format_currency(reward)}"
+                await send_public_log(content=f"🎡 **{interaction.user.display_name}** a gagné à la roulette ! +**{format_currency(reward)}**")
+            else:
+                update_wallet(interaction.user.id, -bet)
+                update_game_stats(interaction.user.id, won=False)
+                status = f"PERDU! -{format_currency(bet)}"
+                await send_public_log(content=f"🎡 **{interaction.user.display_name}** a perdu à la roulette ! -**{format_currency(bet)}**")
+            
+            await anim_manager.update_animation(
+                new_content=get_box(number, icon, color, status, choice)
+            )
+
+        @ui.button(label="🟥 Rouge (x2)", style=discord.ButtonStyle.danger)
+        async def rouge(self, interaction, button):
+            await self.play(interaction, "rouge")
+
+        @ui.button(label="⬛ Noir (x2)", style=discord.ButtonStyle.secondary)
+        async def noir(self, interaction, button):
+            await self.play(interaction, "noir")
+
+        @ui.button(label="🟩 Vert (x14)", style=discord.ButtonStyle.success)
+        async def vert(self, interaction, button):
+            await self.play(interaction, "vert")
+
+    view = RouletteView(interaction.user.id)
+    await interaction.followup.send(
+        content=get_box(None, "🎡", "???", "Choisis une couleur", "?"),
+        view=view,
+        ephemeral=True
+    )
+
+
+@bot.tree.command(name="roulette", description="Joue au Cercle de la Fortune")
+async def roulette(interaction: discord.Interaction):
+    await interaction.response.send_modal(BetModal("🎡 Roulette - Mise", run_roulette_game))
 
 
 async def run_blackjack_game(interaction: discord.Interaction, bet: int):
     if not await validate_game_bet(interaction, "blackjack", bet):
         return
-    game = BlackjackGame(interaction.user.id, bet)
-    view = BlackjackView(game)
-    await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
+    
+    class BlackjackGame:
+        def __init__(self):
+            self.deck = []
+            self.player_hand = []
+            self.dealer_hand = []
+            self.create_deck()
+            
+        def create_deck(self):
+            suits = ["♠️", "♥️", "♦️", "♣️"]
+            ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
+            self.deck = [{"rank": r, "suit": s} for s in suits for r in ranks]
+            random.shuffle(self.deck)
+            
+        def draw(self):
+            return self.deck.pop()
+            
+        def score(self, hand):
+            total = 0
+            aces = 0
+            for card in hand:
+                r = card["rank"]
+                if r in ["J", "Q", "K"]:
+                    total += 10
+                elif r == "A":
+                    aces += 1
+                    total += 11
+                else:
+                    total += int(r)
+            while total > 21 and aces:
+                total -= 10
+                aces -= 1
+            return total
+            
+        def format_hand(self, hand, hide=False):
+            if hide:
+                return f"[{hand[0]['rank']}{hand[0]['suit']}] [?]"
+            return " ".join([f"[{c['rank']}{c['suit']}]" for c in hand])
+
+    game = BlackjackGame()
+    game.player_hand = [game.draw(), game.draw()]
+    game.dealer_hand = [game.draw(), game.draw()]
+
+    class BlackjackView(ui.View):
+        def __init__(self, user_id, bet, game):
+            super().__init__(timeout=60)
+            self.user_id = user_id
+            self.bet = bet
+            self.game = game
+            self.game_over = False
+
+        async def interaction_check(self, interaction):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("❌ Pas votre partie !", ephemeral=True)
+                return False
+            return True
+
+        def get_embed(self, hide_dealer=True, result=None):
+            player_score = self.game.score(self.game.player_hand)
+            dealer_score = self.game.score(self.game.dealer_hand) if not hide_dealer else "?"
+            dealer_str = self.game.format_hand(self.game.dealer_hand, hide_dealer)
+            
+            table = (
+                "```text\n"
+                "┌────────────────────────┐\n"
+                "│      BLACKJACK         │\n"
+                "├────────────────────────┤\n"
+                "│ BANQUE :               │\n"
+                f"│ {dealer_str:<22} │\n"
+                f"│ Score : {str(dealer_score):<14} │\n"
+                "├────────────────────────┤\n"
+                "│ VOUS :                 │\n"
+                f"│ {self.game.format_hand(self.game.player_hand):<22} │\n"
+                f"│ Score : {str(player_score):<14} │\n"
+                "├────────────────────────┤\n"
+                f"│ Mise: {format_currency(self.bet):<16} │\n"
+                "└────────────────────────┘\n"
+                "```"
+            )
+            embed = discord.Embed(title="👑 BLACKJACK", description=table, color=discord.Color.dark_green())
+            if result:
+                embed.add_field(name="📋 RÉSULTAT", value=result, inline=False)
+            return embed
+
+        @ui.button(label="🃏 Tirer", style=discord.ButtonStyle.primary)
+        async def hit(self, interaction, button):
+            if self.game_over:
+                return
+            self.game.player_hand.append(self.game.draw())
+            score = self.game.score(self.game.player_hand)
+            
+            if score > 21:
+                self.game_over = True
+                for child in self.children:
+                    child.disabled = True
+                update_wallet(self.user_id, -self.bet)
+                update_game_stats(self.user_id, won=False)
+                await check_and_unlock_achievements(self.user_id, bot_client=bot)
+                await send_public_log(content=f"🃏 **{interaction.user.display_name}** a fait un BUST ! -**{format_currency(self.bet)}**")
+                await interaction.response.edit_message(
+                    embed=self.get_embed(hide_dealer=False, result=f"💥 BUST ! -{format_currency(self.bet)}"),
+                    view=self
+                )
+            elif score == 21:
+                self.game_over = True
+                for child in self.children:
+                    child.disabled = True
+                gain = int(self.bet * 1.5)
+                update_wallet(self.user_id, gain)
+                update_game_stats(self.user_id, won=True)
+                await check_and_unlock_achievements(self.user_id, bot_client=bot)
+                await send_public_log(content=f"🃏 **{interaction.user.display_name}** a fait un BLACKJACK ! +**{format_currency(gain)}**")
+                await interaction.response.edit_message(
+                    embed=self.get_embed(hide_dealer=False, result=f"🎉 BLACKJACK ! +{format_currency(gain)}"),
+                    view=self
+                )
+            else:
+                await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+        @ui.button(label="🛑 Rester", style=discord.ButtonStyle.secondary)
+        async def stand(self, interaction, button):
+            if self.game_over:
+                return
+            self.game_over = True
+            for child in self.children:
+                child.disabled = True
+                
+            while self.game.score(self.game.dealer_hand) < 17:
+                self.game.dealer_hand.append(self.game.draw())
+                
+            p_score = self.game.score(self.game.player_hand)
+            d_score = self.game.score(self.game.dealer_hand)
+            
+            if d_score > 21:
+                gain = self.bet
+                update_wallet(self.user_id, gain)
+                update_game_stats(self.user_id, won=True)
+                await check_and_unlock_achievements(self.user_id, bot_client=bot)
+                result = f"🎉 Banque > 21 ! +{format_currency(gain)}"
+                await send_public_log(content=f"🃏 **{interaction.user.display_name}** a gagné au Blackjack ! +**{format_currency(gain)}**")
+            elif p_score > d_score:
+                gain = self.bet
+                update_wallet(self.user_id, gain)
+                update_game_stats(self.user_id, won=True)
+                await check_and_unlock_achievements(self.user_id, bot_client=bot)
+                result = f"🎉 Gagné ! +{format_currency(gain)}"
+                await send_public_log(content=f"🃏 **{interaction.user.display_name}** a gagné au Blackjack ! +**{format_currency(gain)}**")
+            elif p_score < d_score:
+                update_wallet(self.user_id, -self.bet)
+                update_game_stats(self.user_id, won=False)
+                result = f"❌ Perdu ! -{format_currency(self.bet)}"
+                await send_public_log(content=f"🃏 **{interaction.user.display_name}** a perdu au Blackjack ! -**{format_currency(self.bet)}**")
+            else:
+                result = "🤝 Égalité !"
+                
+            await interaction.response.edit_message(
+                embed=self.get_embed(hide_dealer=False, result=result),
+                view=self
+            )
+
+    view = BlackjackView(interaction.user.id, bet, game)
+    await interaction.followup.send(embed=view.get_embed(), view=view, ephemeral=True)
 
 
 @bot.tree.command(name="blackjack", description="Joue au Vingt-et-Un Royal")
@@ -4277,7 +3311,7 @@ async def run_slots_game(interaction: discord.Interaction, bet: int):
     symbols = ["🍒", "🍋", "🔔", "⭐", "7️⃣", "💎"]
     name = interaction.user.display_name.upper()[:10]
 
-    def get_slots_box(s1, s2, s3, status):
+    def get_box(s1, s2, s3, status):
         return (
             "```text\n"
             "┌──────────────────────┐\n"
@@ -4294,15 +3328,17 @@ async def run_slots_game(interaction: discord.Interaction, bet: int):
             "```"
         )
 
-    embed = discord.Embed(title="🪙 SLOTS", description=get_slots_box("🍒", "🔔", "💎", "Ouverture..."), color=0xD4AF37)
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    await interaction.followup.send(get_box("🍒", "🔔", "💎", "Ouverture..."), ephemeral=True)
     anim_manager = AnimatedMessageManager(interaction, show_animation=show_anim)
 
     for _ in range(5):
         await asyncio.sleep(0.3)
-        rs1, rs2, rs3 = random.choice(symbols), random.choice(symbols), random.choice(symbols)
-        anim_embed = discord.Embed(title="🪙 SLOTS", description=get_slots_box(rs1, rs2, rs3, "Tourne..."), color=0xD4AF37)
-        await anim_manager.update_animation(new_embed=anim_embed)
+        await anim_manager.update_animation(
+            new_content=get_box(
+                random.choice(symbols), random.choice(symbols), random.choice(symbols),
+                "Tourne..."
+            )
+        )
 
     f1, f2, f3 = random.choice(symbols), random.choice(symbols), random.choice(symbols)
 
@@ -4312,42 +3348,22 @@ async def run_slots_game(interaction: discord.Interaction, bet: int):
         status = f"TRIPLE! +{format_currency(reward)}"
         update_wallet(interaction.user.id, reward - bet)
         update_game_stats(interaction.user.id, won=True)
-        update_quest_progress_v2(interaction.user.id, "slots_win", 1)
-        track_game_win(interaction.user.id, "slots")
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
-        
-        await send_public_log(
-            content=f"🪙 **{interaction.user.display_name}** a fait un TRIPLE aux slots ! +**{format_currency(reward)}**"
-        )
+        await send_public_log(content=f"🪙 **{interaction.user.display_name}** a fait un TRIPLE aux slots ! +**{format_currency(reward)}**")
     elif f1 == f2 or f2 == f3 or f1 == f3:
         reward = int(bet * 1.5)
         status = f"DUO! +{format_currency(reward)}"
         update_wallet(interaction.user.id, reward - bet)
         update_game_stats(interaction.user.id, won=True)
-        update_quest_progress_v2(interaction.user.id, "slots_win", 1)
-        track_game_win(interaction.user.id, "slots")
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
-        
-        await send_public_log(
-            content=f"🪙 **{interaction.user.display_name}** a fait un DUO aux slots ! +**{format_currency(reward)}**"
-        )
+        await send_public_log(content=f"🪙 **{interaction.user.display_name}** a fait un DUO aux slots ! +**{format_currency(reward)}**")
     else:
         status = f"PERDU! -{format_currency(bet)}"
         update_wallet(interaction.user.id, -bet)
         update_game_stats(interaction.user.id, won=False)
-        
-        await send_public_log(
-            content=f"🪙 **{interaction.user.display_name}** a perdu aux slots ! -**{format_currency(bet)}**"
-        )
+        await send_public_log(content=f"🪙 **{interaction.user.display_name}** a perdu aux slots ! -**{format_currency(bet)}**")
 
-    final_embed = discord.Embed(title="🪙 SLOTS", description=get_slots_box(f1, f2, f3, status), color=0xD4AF37)
-    if not show_anim:
-        try:
-            await interaction.edit_original_response(embed=final_embed)
-        except discord.HTTPException:
-            pass
-    else:
-        await anim_manager.update_animation(new_embed=final_embed)
+    await anim_manager.update_animation(new_content=get_box(f1, f2, f3, status))
 
 
 @bot.tree.command(name="slots", description="Joue au Coffre des Mille Écus")
@@ -4355,517 +3371,210 @@ async def slots(interaction: discord.Interaction):
     await interaction.response.send_modal(BetModal("🪙 Slots - Mise", run_slots_game))
 
 
-class DiceView(ui.View):
-    def __init__(self, user_id: int, bet: int):
-        super().__init__(timeout=30)
-        self.user_id = user_id
-        self.bet = bet
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Pas votre partie !", ephemeral=True)
-            return False
-        return True
-
-    @ui.button(label="[ 🎲 LANCER ]", style=discord.ButtonStyle.primary, custom_id="dice_roll_btn")
-    async def roll_dice(self, interaction: discord.Interaction, button: ui.Button):
-        for child in self.children:
-            child.disabled = True
-
-        show_anim = get_user_animation_preference(self.user_id)
-        mini_dice = {1: "[⚀]", 2: "[⚁]", 3: "[⚂]", 4: "[⚃]", 5: "[⚄]", 6: "[⚅]", "hidden": "[?]"}
-        name = interaction.user.display_name.upper()[:10]
-
-        def get_dice_box(d1, d2, p1, p2, status):
-            ds = str(d1 + d2) if d1 and d2 else "?"
-            ps = str(p1 + p2) if p1 and p2 else "?"
-            de1 = mini_dice[d1] if d1 else mini_dice["hidden"]
-            de2 = mini_dice[d2] if d2 else mini_dice["hidden"]
-            pl1 = mini_dice[p1] if p1 else mini_dice["hidden"]
-            pl2 = mini_dice[p2] if p2 else mini_dice["hidden"]
-
-            return (
-                "```ansi\n"
-                "\u001b[1;33m┌──────────────────────┐\n"
-                "│    DÉS DU DESTIN     │\n"
-                "├──────────────────────┤\n"
-                f"│ BANQUE : {ds} {de1}{de2}   │\n"
-                f"│ {name:<10}: {ps} {pl1}{pl2}   │\n"
-                "├──────────────────────┤\n"
-                f"│ \u001b[1;36m{status:<20}\u001b[0m\n"
-                f"│ Mise: {format_currency(self.bet):<14} │\n"
-                "\u001b[1;33m└──────────────────────┘\u001b[0m\n"
-                "```"
-            )
-
-        await interaction.response.edit_message(content=get_dice_box(None, None, None, None, "Préparation..."), view=self)
-        anim_manager = AnimatedMessageManager(interaction, show_animation=show_anim)
-
-        for _ in range(4):
-            await asyncio.sleep(0.6)
-            await anim_manager.update_animation(
-                new_content=get_dice_box(random.randint(1, 6), random.randint(1, 6), random.randint(1, 6), random.randint(1, 6), "Roulent..."),
-                view=self
-            )
-
-        d1, d2 = random.randint(1, 6), random.randint(1, 6)
-        p1, p2 = random.randint(1, 6), random.randint(1, 6)
-        if (p1 + p2) > (d1 + d2):
-            update_wallet(self.user_id, self.bet)
-            update_game_stats(self.user_id, won=True)
-            update_quest_progress_v2(self.user_id, "dice_win", 1)
-            track_game_win(self.user_id, "dice")
-            await check_and_unlock_achievements(self.user_id, bot_client=bot)
-            status = f"VICTOIRE! +{format_currency(self.bet)}"
-            
-            await send_public_log(
-                content=f"🎲 **{interaction.user.display_name}** a gagné aux dés ! +**{format_currency(self.bet)}**"
-            )
-        elif (p1 + p2) < (d1 + d2):
-            update_wallet(self.user_id, -self.bet)
-            update_game_stats(self.user_id, won=False)
-            status = f"PERDU! -{format_currency(self.bet)}"
-            
-            await send_public_log(
-                content=f"🎲 **{interaction.user.display_name}** a perdu aux dés ! -**{format_currency(self.bet)}**"
-            )
-        else:
-            status = "ÉGALITÉ !"
-
-        final_content = get_dice_box(d1, d2, p1, p2, status)
-        if not show_anim:
-            try:
-                await interaction.edit_original_response(content=final_content, view=self)
-            except discord.HTTPException:
-                pass
-        else:
-            await anim_manager.update_animation(new_content=final_content, view=self)
-
-
-async def run_dice_game(interaction: discord.Interaction, bet: int):
-    if not await validate_game_bet(interaction, "dice", bet):
-        return
-    name = interaction.user.display_name.upper()[:10]
-    initial_box = (
-        "```ansi\n"
-        "\u001b[1;33m┌──────────────────────┐\n"
-        "│    DÉS DU DESTIN     │\n"
-        "├──────────────────────┤\n"
-        "│ BANQUE : ? [?] [?]   │\n"
-        f"│ {name:<10}: ? [?] [?]   │\n"
-        "├──────────────────────┤\n"
-        "│ \u001b[1;36mPrêt à lancer         \u001b[0m\n"
-        f"│ Mise: {format_currency(bet):<14} │\n"
-        "\u001b[1;33m└──────────────────────┘\u001b[0m\n"
-        "```"
-    )
-    view = DiceView(interaction.user.id, bet)
-    await interaction.followup.send(content=initial_box, view=view, ephemeral=True)
-
-
-@bot.tree.command(name="dice", description="Joue aux Dés du Destin")
-async def dice(interaction: discord.Interaction):
-    await interaction.response.send_modal(BetModal("🎲 Dés du Destin - Mise", run_dice_game))
-
-
-class RouletteView(ui.View):
-    def __init__(self, user_id: int, bet: int):
-        super().__init__(timeout=30)
-        self.user_id = user_id
-        self.bet = bet
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Pas votre partie !", ephemeral=True)
-            return False
-        return True
-
-    async def play_roulette(self, interaction: discord.Interaction, choice: str):
-        for child in self.children:
-            child.disabled = True
-
-        show_anim = get_user_animation_preference(self.user_id)
-        wheel_sequence = [(0, "🟩", "vert"), (32, "🟥", "rouge"), (15, "⬛", "noir"), (19, "🟥", "rouge"), (4, "⬛", "noir")]
-        name = interaction.user.display_name.upper()[:10]
-
-        def get_box(num, icon, col_name, status):
-            return (
-                "```ansi\n"
-                "\u001b[1;33m┌──────────────────────┐\n"
-                "│       ROULETTE       │\n"
-                "├──────────────────────┤\n"
-                f"│ {name:<10} CHOIX:{choice[:4]} │\n"
-                f"│ ROUE: [{icon} {num:02d} ({col_name[:3].upper()})]  │\n"
-                "├──────────────────────┤\n"
-                f"│ \u001b[1;36m{status:<20}\u001b[0m\n"
-                f"│ Mise: {format_currency(self.bet):<14} │\n"
-                "\u001b[1;33m└──────────────────────┘\u001b[0m\n"
-                "```"
-            )
-
-        fn, fi, fc = random.choice(wheel_sequence)
-        await interaction.response.edit_message(content=get_box(fn, fi, fc, "Tourne..."), view=self)
-        anim_manager = AnimatedMessageManager(interaction, show_animation=show_anim)
-
-        for _ in range(3):
-            await asyncio.sleep(0.7)
-            rn, ri, rc = random.choice(wheel_sequence)
-            await anim_manager.update_animation(new_content=get_box(rn, ri, rc, "Ralentit..."), view=self)
-
-        number = random.randint(0, 36)
-        color = "vert" if number == 0 else ("rouge" if number % 2 == 0 else "noir")
-        icon = "🟩" if number == 0 else ("🟥" if color == "rouge" else "⬛")
-
-        if choice == color:
-            mult = 14 if color == "vert" else 2
-            reward = self.bet * mult
-            update_wallet(self.user_id, reward - self.bet)
-            update_game_stats(self.user_id, won=True)
-            update_quest_progress_v2(self.user_id, "roulette_win", 1)
-            track_game_win(self.user_id, "roulette")
-            await check_and_unlock_achievements(self.user_id, bot_client=bot)
-            status = f"GAGNÉ! +{format_currency(reward)}"
-            
-            await send_public_log(
-                content=f"🎡 **{interaction.user.display_name}** a gagné à la roulette ({color}) ! +**{format_currency(reward)}**"
-            )
-        else:
-            update_wallet(self.user_id, -self.bet)
-            update_game_stats(self.user_id, won=False)
-            status = f"PERDU! -{format_currency(self.bet)}"
-            
-            await send_public_log(
-                content=f"🎡 **{interaction.user.display_name}** a perdu à la roulette ({choice}) ! -**{format_currency(self.bet)}**"
-            )
-
-        final_content = get_box(number, icon, color, status)
-        if not show_anim:
-            try:
-                await interaction.edit_original_response(content=final_content, view=self)
-            except discord.HTTPException:
-                pass
-        else:
-            await anim_manager.update_animation(new_content=final_content, view=self)
-
-    @ui.button(label="🟥 Rouge (x2)", style=discord.ButtonStyle.danger, custom_id="roulette_rouge")
-    async def rouge(self, interaction: discord.Interaction, button: ui.Button):
-        await self.play_roulette(interaction, "rouge")
-
-    @ui.button(label="⬛ Noir (x2)", style=discord.ButtonStyle.secondary, custom_id="roulette_noir")
-    async def noir(self, interaction: discord.Interaction, button: ui.Button):
-        await self.play_roulette(interaction, "noir")
-
-    @ui.button(label="🟩 Vert (x14)", style=discord.ButtonStyle.success, custom_id="roulette_vert")
-    async def vert(self, interaction: discord.Interaction, button: ui.Button):
-        await self.play_roulette(interaction, "vert")
-
-
-async def run_roulette_game(interaction: discord.Interaction, bet: int):
-    if not await validate_game_bet(interaction, "roulette", bet):
-        return
-    name = interaction.user.display_name.upper()[:10]
-    initial_box = (
-        "```ansi\n"
-        "\u001b[1;33m┌──────────────────────┐\n"
-        "│       ROULETTE       │\n"
-        "├──────────────────────┤\n"
-        f"│ {name:<10} CHOIX: ?     │\n"
-        "│ ROUE: [🎡 ATTENTE]   │\n"
-        "├──────────────────────┤\n"
-        "│ \u001b[1;36mChoisis une couleur  \u001b[0m\n"
-        f"│ Mise: {format_currency(bet):<14} │\n"
-        "\u001b[1;33m└──────────────────────┘\u001b[0m\n"
-        "```"
-    )
-    view = RouletteView(interaction.user.id, bet)
-    await interaction.followup.send(content=initial_box, view=view, ephemeral=True)
-
-
-@bot.tree.command(name="roulette", description="Joue au Cercle de la Fortune")
-async def roulette(interaction: discord.Interaction):
-    await interaction.response.send_modal(BetModal("🎡 Roulette - Mise", run_roulette_game))
-
-
-class RussianRouletteView(ui.View):
-    def __init__(self, user_id: int, bet: int):
-        super().__init__(timeout=60)
-        self.user_id = user_id
-        self.bet = bet
-        self.current_shot = 0
-        self.bullet_chamber = random.randint(0, 4)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Pas votre partie !", ephemeral=True)
-            return False
-        return True
-
-    def get_current_multiplier(self) -> float:
-        return {0: 1.0, 1: 1.5, 2: 2.5, 3: 4.0, 4: 7.0, 5: 12.0}.get(self.current_shot, 1.0)
-
-    @ui.button(label="[ 🔫 TIRE ]", style=discord.ButtonStyle.danger, custom_id="rr_shoot")
-    async def shoot(self, interaction: discord.Interaction, button: ui.Button):
-        if self.current_shot == self.bullet_chamber:
-            for child in self.children:
-                child.disabled = True
-            update_wallet(self.user_id, -self.bet)
-            update_game_stats(self.user_id, won=False)
-            
-            await send_public_log(
-                content=f"🔫 **{interaction.user.display_name}** s'est fait tirer dessus à la roulette russe ! -**{format_currency(self.bet)}**"
-            )
-            
-            display = (
-                "```ansi\n"
-                "\u001b[1;31m┌──────────────────────┐\n"
-                "│    ROULETTE RUSSE    │\n"
-                "├──────────────────────┤\n"
-                f"│ Tentative #{self.current_shot + 1}/5          │\n"
-                "│       💥 (x_x) 💥    │\n"
-                "├──────────────────────┤\n"
-                "│ \u001b[1;31mPAN ! PERDU           \u001b[0m\n"
-                f"│ Perte: -{format_currency(self.bet):<13} │\n"
-                "\u001b[1;31m└──────────────────────┘\u001b[0m\n"
-                "```"
-            )
-            await interaction.response.edit_message(content=display, view=self)
-            self.stop()
-            return
-
-        self.current_shot += 1
-        if self.current_shot >= 5:
-            for child in self.children:
-                child.disabled = True
-            total_gain = self.bet + 2000
-            update_wallet(self.user_id, total_gain)
-            update_game_stats(self.user_id, won=True)
-            update_quest_progress_v2(self.user_id, "russian_roulette_survive", 1)
-            track_game_win(self.user_id, "russian_roulette")
-            await check_and_unlock_achievements(self.user_id, bot_client=bot)
-            
-            await send_public_log(
-                content=f"🔫 **{interaction.user.display_name}** a survécu à 5 tirs de roulette russe et remporte **{format_currency(total_gain)}** !"
-            )
-            
-            display = (
-                "```ansi\n"
-                "\u001b[1;33m┌──────────────────────┐\n"
-                "│    CHANCE DU COCU    │\n"
-                "├──────────────────────┤\n"
-                "│ 5 tirs réussis !     │\n"
-                "│       😎 (🏆)        │\n"
-                "├──────────────────────┤\n"
-                "│ \u001b[1;32mSURVIVANT LÉGENDAIRE \u001b[0m\n"
-                f"│ Gain: +{format_currency(total_gain):<14} │\n"
-                "\u001b[1;33m└──────────────────────┘\u001b[0m\n"
-                "```"
-            )
-            await interaction.response.edit_message(content=display, view=self)
-            self.stop()
-            return
-
-        pot = int(self.bet * self.get_current_multiplier())
-        display = (
-            "```ansi\n"
-            "\u001b[1;36m┌──────────────────────┐\n"
-            "│    ROULETTE RUSSE    │\n"
-            "├──────────────────────┤\n"
-            f"│ Tir #{self.current_shot}/5 validé    │\n"
-            "│       ✨ (o_o) 💧    │\n"
-            "├──────────────────────┤\n"
-            "│ \u001b[1;32mCLIC ! En vie.       \u001b[0m\n"
-            f"│ Potentiel: {format_currency(pot):<10} │\n"
-            "\u001b[1;36m└──────────────────────┘\u001b[0m\n"
-            "```"
-        )
-        await interaction.response.edit_message(content=display, view=self)
-
-    @ui.button(label="[ 💰 Encaisser ]", style=discord.ButtonStyle.success, custom_id="rr_cashout")
-    async def cashout(self, interaction: discord.Interaction, button: ui.Button):
-        if self.current_shot == 0:
-            return await interaction.response.send_message("❌ Tire au moins une fois !", ephemeral=True)
-        for child in self.children:
-            child.disabled = True
-        won = int(self.bet * self.get_current_multiplier())
-        update_wallet(self.user_id, won)
-        update_game_stats(self.user_id, won=True)
-        update_quest_progress_v2(self.user_id, "russian_roulette_survive", 1)
-        track_game_win(self.user_id, "russian_roulette")
-        await check_and_unlock_achievements(self.user_id, bot_client=bot)
-        
-        await send_public_log(
-            content=f"🔫 **{interaction.user.display_name}** a encaissé après {self.current_shot} tirs de roulette russe ! +**{format_currency(won)}**"
-        )
-        
-        display = (
-            "```ansi\n"
-            "\u001b[1;32m┌──────────────────────┐\n"
-            "│      ENCAISSEMENT    │\n"
-            "├──────────────────────┤\n"
-            f"│ Tirs réussis : {self.current_shot}/5   │\n"
-            "│       (^_-) 💵       │\n"
-            "├──────────────────────┤\n"
-            "│ \u001b[1;32mRETRAIT SUCCÈS       \u001b[0m\n"
-            f"│ Gain: +{format_currency(won):<14} │\n"
-            "\u001b[1;32m└──────────────────────┘\u001b[0m\n"
-            "```"
-        )
-        await interaction.response.edit_message(content=display, view=self)
-        self.stop()
-
-
-async def run_russian_roulette(interaction: discord.Interaction, bet: int):
-    if not await validate_game_bet(interaction, "roulette-russe", bet):
-        return
-    display = (
-        "```ansi\n"
-        "\u001b[1;31m┌──────────────────────┐\n"
-        "│    ROULETTE RUSSE    │\n"
-        "├──────────────────────┤\n"
-        "│ Barillet chargé...   │\n"
-        "│       😎 (?)         │\n"
-        "├──────────────────────┤\n"
-        "│ \u001b[1;33mPrêt au destin       \u001b[0m\n"
-        f"│ Mise: {format_currency(bet):<14} │\n"
-        "\u001b[1;31m└──────────────────────┘\u001b[0m\n"
-        "```"
-    )
-    view = RussianRouletteView(interaction.user.id, bet)
-    await interaction.followup.send(content=display, view=view, ephemeral=True)
-
-
-@bot.tree.command(name="roulette-russe", description="Joue à la roulette russe")
-async def roulette_russe(interaction: discord.Interaction):
-    await interaction.response.send_modal(BetModal("🔫 Roulette Russe - Mise", run_russian_roulette))
-
-
-class PFCView(ui.View):
-    def __init__(self, user_id: int, bet: int):
-        super().__init__(timeout=30)
-        self.user_id = user_id
-        self.bet = bet
-        self.choice = None
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Pas votre partie !", ephemeral=True)
-            return False
-        return True
-
-    @ui.button(label="Pierre", style=discord.ButtonStyle.primary, emoji="🪨", custom_id="pfc_pierre")
-    async def pierre(self, interaction: discord.Interaction, button: ui.Button):
-        self.choice = "pierre"
-        self.stop()
-        await self.execute_game(interaction)
-
-    @ui.button(label="Feuille", style=discord.ButtonStyle.success, emoji="📄", custom_id="pfc_feuille")
-    async def feuille(self, interaction: discord.Interaction, button: ui.Button):
-        self.choice = "feuille"
-        self.stop()
-        await self.execute_game(interaction)
-
-    @ui.button(label="Ciseau", style=discord.ButtonStyle.danger, emoji="✂️", custom_id="pfc_ciseau")
-    async def ciseau(self, interaction: discord.Interaction, button: ui.Button):
-        self.choice = "ciseau"
-        self.stop()
-        await self.execute_game(interaction)
-
-    async def execute_game(self, interaction: discord.Interaction):
-        for child in self.children:
-            child.disabled = True
-
-        show_anim = get_user_animation_preference(self.user_id)
-        emaps = {"pierre": "🪨 Pierre", "feuille": "📄 Feuille", "ciseau": "✂️ Ciseau"}
-        name = interaction.user.display_name.upper()[:10]
-
-        def get_pfc_box(uc, bc, status, emoji_face):
-            return (
-                "```ansi\n"
-                "\u001b[1;35m┌──────────────────────┐\n"
-                "│         PFC          │\n"
-                "├──────────────────────┤\n"
-                f"│ {name:<10}: {uc:<9} │\n"
-                f"│ BOT     : {bc:<9} │\n"
-                f"│        {emoji_face}          │\n"
-                "├──────────────────────┤\n"
-                f"│ \u001b[1;36m{status:<20}\u001b[0m\n"
-                f"│ Mise: {format_currency(self.bet):<14} │\n"
-                "\u001b[1;35m└──────────────────────┘\u001b[0m\n"
-                "```"
-            )
-
-        await interaction.response.edit_message(content=get_pfc_box(emaps[self.choice], "Analyse...", "Duel...", "(._.)"), view=self)
-        anim_manager = AnimatedMessageManager(interaction, show_animation=show_anim)
-
-        for step in ["Pierre...", "Feuille...", "Ciseau!"]:
-            await asyncio.sleep(0.3)
-            await anim_manager.update_animation(new_content=get_pfc_box(emaps[self.choice], f"{random.choice(['🪨','📄','✂️'])}...", step, "(>_<)"), view=self)
-
-        bot_choice = random.choice(["pierre", "feuille", "ciseau"])
-        bc_str = emaps[bot_choice]
-
-        if self.choice == bot_choice:
-            res = "🤝 Égalité !"
-            face = "(^_^;)"
-        elif ((self.choice == "pierre" and bot_choice == "ciseau") or
-              (self.choice == "feuille" and bot_choice == "pierre") or
-              (self.choice == "ciseau" and bot_choice == "feuille")):
-            update_wallet(self.user_id, self.bet)
-            update_game_stats(self.user_id, won=True)
-            update_quest_progress_v2(self.user_id, "pfc_win", 1)
-            track_game_win(self.user_id, "pfc")
-            await check_and_unlock_achievements(self.user_id, bot_client=bot)
-            res = "🎉 Gagné !"
-            face = "(^o^) 🏆"
-            
-            await send_public_log(
-                content=f"✂️ **{interaction.user.display_name}** a gagné au PFC ! +**{format_currency(self.bet)}**"
-            )
-        else:
-            update_wallet(self.user_id, -self.bet)
-            update_game_stats(self.user_id, won=False)
-            res = "❌ Perdu !"
-            face = "(T_T) 💀"
-            
-            await send_public_log(
-                content=f"✂️ **{interaction.user.display_name}** a perdu au PFC ! -**{format_currency(self.bet)}**"
-            )
-
-        final_content = get_pfc_box(emaps[self.choice], bc_str, res, face)
-        if not show_anim:
-            try:
-                await interaction.edit_original_response(content=final_content, view=self)
-            except discord.HTTPException:
-                pass
-        else:
-            await anim_manager.update_animation(new_content=final_content, view=self)
-
-
 async def run_pfc_game(interaction: discord.Interaction, bet: int):
     if not await validate_game_bet(interaction, "pfc", bet):
         return
+
+    emaps = {"pierre": "🪨 Pierre", "feuille": "📄 Feuille", "ciseau": "✂️ Ciseau"}
     name = interaction.user.display_name.upper()[:10]
-    initial_box = (
-        "```ansi\n"
-        "\u001b[1;35m┌──────────────────────┐\n"
-        "│         PFC          │\n"
-        "├──────────────────────┤\n"
-        f"│ {name:<10}: En attente│\n"
-        "│ BOT     : En attente│\n"
-        "│        (o_o) ✂️       │\n"
-        "├──────────────────────┤\n"
-        "│ \u001b[1;36mChoisis ci-dessous   \u001b[0m\n"
-        f"│ Mise: {format_currency(bet):<14} │\n"
-        "\u001b[1;35m└──────────────────────┘\u001b[0m\n"
-        "```"
+
+    def get_box(uc, bc, status, face):
+        return (
+            "```text\n"
+            "┌──────────────────────┐\n"
+            "│         PFC          │\n"
+            "├──────────────────────┤\n"
+            f"│ {name:<10}: {uc:<9} │\n"
+            f"│ BOT     : {bc:<9} │\n"
+            f"│        {face}          │\n"
+            "├──────────────────────┤\n"
+            f"│ {status:<20} │\n"
+            f"│ Mise: {format_currency(bet):<14} │\n"
+            "└──────────────────────┘\n"
+            "```"
+        )
+
+    class PFCView(ui.View):
+        def __init__(self, user_id):
+            super().__init__(timeout=30)
+            self.user_id = user_id
+            self.choice = None
+
+        async def interaction_check(self, interaction):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("❌ Pas votre partie !", ephemeral=True)
+                return False
+            return True
+
+        async def play(self, interaction, choice):
+            self.choice = choice
+            for child in self.children:
+                child.disabled = True
+                
+            await interaction.response.edit_message(
+                content=get_box(emaps[choice], "Analyse...", "Duel...", "(._.)"),
+                view=self
+            )
+            
+            anim_manager = AnimatedMessageManager(interaction, show_animation=show_anim)
+            for step in ["Pierre...", "Feuille...", "Ciseau!"]:
+                await asyncio.sleep(0.3)
+                await anim_manager.update_animation(
+                    new_content=get_box(emaps[choice], f"{random.choice(['🪨','📄','✂️'])}...", step, "(>_<)")
+                )
+            
+            bot_choice = random.choice(["pierre", "feuille", "ciseau"])
+            
+            if choice == bot_choice:
+                res = "🤝 Égalité !"
+                face = "(^_^;)"
+            elif ((choice == "pierre" and bot_choice == "ciseau") or
+                  (choice == "feuille" and bot_choice == "pierre") or
+                  (choice == "ciseau" and bot_choice == "feuille")):
+                update_wallet(self.user_id, bet)
+                update_game_stats(self.user_id, won=True)
+                await check_and_unlock_achievements(self.user_id, bot_client=bot)
+                res = "🎉 Gagné !"
+                face = "(^o^) 🏆"
+                await send_public_log(content=f"✂️ **{interaction.user.display_name}** a gagné au PFC ! +**{format_currency(bet)}**")
+            else:
+                update_wallet(self.user_id, -bet)
+                update_game_stats(self.user_id, won=False)
+                res = "❌ Perdu !"
+                face = "(T_T) 💀"
+                await send_public_log(content=f"✂️ **{interaction.user.display_name}** a perdu au PFC ! -**{format_currency(bet)}**")
+            
+            await anim_manager.update_animation(
+                new_content=get_box(emaps[choice], emaps[bot_choice], res, face)
+            )
+
+        @ui.button(label="🪨 Pierre", style=discord.ButtonStyle.primary)
+        async def pierre(self, interaction, button):
+            await self.play(interaction, "pierre")
+
+        @ui.button(label="📄 Feuille", style=discord.ButtonStyle.success)
+        async def feuille(self, interaction, button):
+            await self.play(interaction, "feuille")
+
+        @ui.button(label="✂️ Ciseau", style=discord.ButtonStyle.danger)
+        async def ciseau(self, interaction, button):
+            await self.play(interaction, "ciseau")
+
+    view = PFCView(interaction.user.id)
+    await interaction.followup.send(
+        content=get_box("En attente", "En attente", "Choisis", "(o_o)"),
+        view=view,
+        ephemeral=True
     )
-    view = PFCView(interaction.user.id, bet)
-    await interaction.followup.send(content=initial_box, view=view, ephemeral=True)
 
 
 @bot.tree.command(name="pfc", description="Joue à Pierre-Feuille-Ciseaux")
 async def pfc(interaction: discord.Interaction):
     await interaction.response.send_modal(BetModal("✂️ PFC - Mise", run_pfc_game))
+
+
+async def run_russian_roulette(interaction: discord.Interaction, bet: int):
+    if not await validate_game_bet(interaction, "roulette-russe", bet):
+        return
+
+    class RRView(ui.View):
+        def __init__(self, user_id, bet):
+            super().__init__(timeout=60)
+            self.user_id = user_id
+            self.bet = bet
+            self.shots = 0
+            self.bullet = random.randint(0, 5)
+            self.alive = True
+
+        async def interaction_check(self, interaction):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("❌ Pas votre partie !", ephemeral=True)
+                return False
+            return True
+
+        def get_display(self, status, emoji):
+            return (
+                "```text\n"
+                "┌──────────────────────┐\n"
+                "│    ROULETTE RUSSE    │\n"
+                "├──────────────────────┤\n"
+                f"│ Tir #{self.shots}/6            │\n"
+                f"│       {emoji}          │\n"
+                "├──────────────────────┤\n"
+                f"│ {status:<20} │\n"
+                f"│ Mise: {format_currency(self.bet):<14} │\n"
+                "└──────────────────────┘\n"
+                "```"
+            )
+
+        @ui.button(label="🔫 Tirer", style=discord.ButtonStyle.danger)
+        async def shoot(self, interaction, button):
+            if not self.alive:
+                return
+                
+            self.shots += 1
+            
+            if self.shots - 1 == self.bullet:
+                self.alive = False
+                for child in self.children:
+                    child.disabled = True
+                update_wallet(self.user_id, -self.bet)
+                update_game_stats(self.user_id, won=False)
+                await send_public_log(content=f"🔫 **{interaction.user.display_name}** s'est fait tirer dessus ! -**{format_currency(self.bet)}**")
+                await interaction.response.edit_message(
+                    content=self.get_display("PAN ! PERDU", "💥 (x_x) 💥"),
+                    view=self
+                )
+                return
+                
+            if self.shots >= 6:
+                self.alive = False
+                for child in self.children:
+                    child.disabled = True
+                gain = self.bet * 3
+                update_wallet(self.user_id, gain)
+                update_game_stats(self.user_id, won=True)
+                await check_and_unlock_achievements(self.user_id, bot_client=bot)
+                await send_public_log(content=f"🔫 **{interaction.user.display_name}** a survécu à 6 tirs ! +**{format_currency(gain)}**")
+                await interaction.response.edit_message(
+                    content=self.get_display(f"SURVIVANT ! +{format_currency(gain)}", "😎 (🏆)"),
+                    view=self
+                )
+                return
+                
+            await interaction.response.edit_message(
+                content=self.get_display(f"CLIC ! En vie.", "✨ (o_o) 💧"),
+                view=self
+            )
+
+        @ui.button(label="💰 Encaisser", style=discord.ButtonStyle.success)
+        async def cashout(self, interaction, button):
+            if self.shots == 0:
+                await interaction.response.send_message("❌ Tire au moins une fois !", ephemeral=True)
+                return
+            for child in self.children:
+                child.disabled = True
+            gain = int(self.bet * (1 + self.shots * 0.5))
+            update_wallet(self.user_id, gain)
+            update_game_stats(self.user_id, won=True)
+            await check_and_unlock_achievements(self.user_id, bot_client=bot)
+            await send_public_log(content=f"🔫 **{interaction.user.display_name}** a encaissé {self.shots} tirs ! +**{format_currency(gain)}**")
+            await interaction.response.edit_message(
+                content=self.get_display(f"RETRAIT +{format_currency(gain)}", "(^_-) 💵"),
+                view=self
+            )
+
+    view = RRView(interaction.user.id, bet)
+    await interaction.followup.send(
+        content="```text\n┌──────────────────────┐\n│    ROULETTE RUSSE    │\n├──────────────────────┤\n│ Barillet chargé...   │\n│       😎 (?)         │\n├──────────────────────┤\n│ Prêt au destin       │\n│ Mise: {:<14} │\n└──────────────────────┘\n```".format(format_currency(bet)),
+        view=view,
+        ephemeral=True
+    )
+
+
+@bot.tree.command(name="roulette-russe", description="Joue à la roulette russe")
+async def roulette_russe(interaction: discord.Interaction):
+    await interaction.response.send_modal(BetModal("🔫 Roulette Russe - Mise", run_russian_roulette))
 
 
 async def run_poker_game(interaction: discord.Interaction, mise: int):
@@ -4894,24 +3603,15 @@ async def run_poker_game(interaction: discord.Interaction, mise: int):
     if gain > 0:
         update_wallet(interaction.user.id, gain)
         update_game_stats(interaction.user.id, won=True)
-        update_quest_progress_v2(interaction.user.id, "poker_win", 1)
-        track_game_win(interaction.user.id, "poker")
         await check_and_unlock_achievements(interaction.user.id, bot_client=bot)
-        
-        await send_public_log(
-            content=f"⚜️ **{interaction.user.display_name}** a fait un {res} au poker ! +**{format_currency(gain)}**"
-        )
+        await send_public_log(content=f"⚜️ **{interaction.user.display_name}** a fait un {res} au poker ! +**{format_currency(gain)}**")
     else:
         update_wallet(interaction.user.id, -mise)
         update_game_stats(interaction.user.id, won=False)
-        
-        await send_public_log(
-            content=f"⚜️ **{interaction.user.display_name}** a perdu au poker ({res}) ! -**{format_currency(mise)}**"
-        )
+        await send_public_log(content=f"⚜️ **{interaction.user.display_name}** a perdu au poker ! -**{format_currency(mise)}**")
 
     name = interaction.user.display_name.upper()[:10]
-
-    table_design = (
+    table = (
         "```text\n"
         "┌──────────────────────┐\n"
         "│     JEU NOBLES       │\n"
@@ -4919,23 +3619,438 @@ async def run_poker_game(interaction: discord.Interaction, mise: int):
         f"│ {name:<20} │\n"
         f"│ {' '.join(main):<20} │\n"
         "├──────────────────────┤\n"
-        f"│ Mise: {format_currency(mise):<14} │\n"
+        f"│ {res} {format_currency(gain):<12} │\n"
         "└──────────────────────┘\n"
         "```"
     )
-    embed = discord.Embed(title="⚜️ POKER SOLITAIRE", description=table_design, color=discord.Color.gold() if gain >= 0 else discord.Color.dark_red())
-    embed.add_field(name="RÉSULTAT", value=f"{res} (**{format_currency(gain)}**)", inline=False)
+    embed = discord.Embed(title="⚜️ POKER SOLITAIRE", description=table, color=discord.Color.gold() if gain >= 0 else discord.Color.dark_red())
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="poker-solitaire", description="Joue au Poker Solitaire des Nobles")
 async def poker_solitaire(interaction: discord.Interaction):
-    await interaction.response.send_modal(BetModal("⚜️ Poker Solitaire - Mise", run_poker_game))
+    await interaction.response.send_modal(BetModal("⚜️ Poker - Mise", run_poker_game))
 
 
-# =============================================================
-# SYSTÈME BOUTIQUE & GUILLAUME LE TROUBADOUR
-# =============================================================
+# ==========================================
+# 14. COMMANDES DE SETUP
+# ==========================================
+
+@bot.tree.command(name="setup", description="[ADMIN] Configure les salons des PNJ")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.choices(ai_type=[
+    app_commands.Choice(name="Tous les PNJ (Carrefour)", value="all"),
+    app_commands.Choice(name="Banque (DAB)", value="banque"),
+    app_commands.Choice(name="Taverne (Jim)", value="taverne"),
+    app_commands.Choice(name="Crime (John)", value="crime"),
+    app_commands.Choice(name="Bookmaker (Brook)", value="brook"),
+    app_commands.Choice(name="Arene (Bob)", value="arene"),
+    app_commands.Choice(name="Marchand (Tom)", value="marchand"),
+    app_commands.Choice(name="Troubadour (Guillaume)", value="troubadour"),
+    app_commands.Choice(name="Succes", value="achievements"),
+    app_commands.Choice(name="Quetes quotidiennes", value="quetes")
+])
+async def setup(interaction: discord.Interaction, ai_type: str, salon: discord.TextChannel):
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild.id
+
+    if ai_type == "all":
+        await interaction.followup.send(f"✅ Le Carrefour des PNJ a bien été déployé dans {salon.mention} !", ephemeral=True)
+        
+        # Jim
+        embed_jim = discord.Embed(
+            description="🍺 **Jim le Tavernier**\n*(S'essuie les mains sur un torchon)* Bienvenue dans ma taverne !",
+            color=0xD35400
+        )
+        await salon.send(embed=embed_jim, view=JimTavernView())
+        
+        # John
+        embed_john = discord.Embed(
+            description="🥷 **Ruelle Sombre — JOHN LE BRIGAND**\n*(S'adosse à un mur lépreux)* T'as l'regard inquiet, l'ami...",
+            color=0x2B2D31
+        )
+        await salon.send(embed=embed_john, view=JohnCrimeView())
+        
+        # Bob
+        embed_bob = discord.Embed(
+            description="🏟️ **L'Arène des Combats — BOB**\n*(Affûtant une longue épée)* Bienvenue dans l'arène, guerrier !",
+            color=0x992D22
+        )
+        await salon.send(embed=embed_bob, view=BobArenaView())
+        
+        # Brook
+        odds = generate_brook_odds()
+        embed_brook = discord.Embed(
+            description=f"📜 **Guichet des Paris — BROOK**\nCanabis (x{odds[1]}), Jolly Jumper (x{odds[2]}), Pégase (x{odds[3]}), Petit Tonnerre (x{odds[4]})",
+            color=0x1ABC9C
+        )
+        await salon.send(embed=embed_brook, view=BrookBookmakerView(odds))
+        
+        # Marchand
+        embed_marchand = discord.Embed(
+            title="✨ Bienvenue au Salon du Shop !",
+            description="🦊 **Tom le Marchand** est installé ici.\n👉 Clique sur le bouton ci-dessous !",
+            color=discord.Color.gold()
+        )
+        embed_marchand.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
+        await salon.send(embed=embed_marchand, view=PersistentMerchantView())
+        
+        # Troubadour
+        embed_troubadour = discord.Embed(
+            title="🪕 Guillaume le Troubadour",
+            description="✨ **Guillaume** est arrivé pour conter les épopées.\n👉 Clique pour lui parler !",
+            color=discord.Color.purple()
+        )
+        embed_troubadour.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
+        await salon.send(embed=embed_troubadour, view=PersistentTroubadourView())
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO ai_channels (guild_id, ai_type, channel_id) VALUES (?, ?, ?)",
+                (guild_id, "brook", salon.id)
+            )
+            conn.commit()
+        return
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO ai_channels (guild_id, ai_type, channel_id) VALUES (?, ?, ?)",
+            (guild_id, ai_type, salon.id)
+        )
+        conn.commit()
+
+    if ai_type == "achievements":
+        await interaction.followup.send(f"✅ Salon des succès défini sur {salon.mention} !", ephemeral=True)
+        embed = discord.Embed(
+            title="🏆 Hall des Succès - Actif",
+            description="Ce salon affichera les succès débloqués par les membres !",
+            color=discord.Color.gold()
+        )
+        await salon.send(embed=embed)
+
+    elif ai_type == "banque":
+        await interaction.followup.send(f"✅ Guichet de la banque installé dans {salon.mention} !", ephemeral=True)
+        embed = discord.Embed(
+            title="🏦 Banque des IV Sceaux",
+            description="*(Un grincement lourd résonne dans la salle forte)*\nBienvenue au guichet automatique.",
+            color=0x34495E
+        )
+        await salon.send(embed=embed, view=BankView())
+
+    elif ai_type == "taverne":
+        await interaction.followup.send(f"✅ Jim installé dans {salon.mention} !", ephemeral=True)
+        embed = discord.Embed(
+            description="🍺 **Jim le Tavernier**\n*(S'essuie les mains)* Bienvenue dans ma taverne !",
+            color=0xD35400
+        )
+        await salon.send(embed=embed, view=JimTavernView())
+
+    elif ai_type == "crime":
+        await interaction.followup.send(f"✅ John installé dans {salon.mention} !", ephemeral=True)
+        embed = discord.Embed(
+            description="🥷 **Ruelle Sombre — JOHN LE BRIGAND**\n*(S'adosse à un mur)* T'as l'regard inquiet...",
+            color=0x2B2D31
+        )
+        await salon.send(embed=embed, view=JohnCrimeView())
+
+    elif ai_type == "brook":
+        await interaction.followup.send(f"✅ Brook installée dans {salon.mention} !", ephemeral=True)
+        odds = generate_brook_odds()
+        embed = discord.Embed(
+            description=f"📜 **Guichet des Paris — BROOK**\nCanabis (x{odds[1]}), Jolly Jumper (x{odds[2]}), Pégase (x{odds[3]}), Petit Tonnerre (x{odds[4]})",
+            color=0x1ABC9C
+        )
+        await salon.send(embed=embed, view=BrookBookmakerView(odds))
+
+    elif ai_type == "arene":
+        embed = discord.Embed(
+            description="🏟️ **L'Arène des Combats — BOB**\n*(Affûtant une longue épée)* Bienvenue dans l'arène !",
+            color=0x992D22
+        )
+        await salon.send(embed=embed, view=BobArenaView())
+        await interaction.followup.send(f"✅ Bob installé dans {salon.mention} !", ephemeral=True)
+
+    elif ai_type == "marchand":
+        embed = discord.Embed(
+            title="✨ Bienvenue au Salon du Shop !",
+            description="🦊 **Tom le Marchand** est installé ici.\n👉 Clique sur le bouton ci-dessous !",
+            color=discord.Color.gold()
+        )
+        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
+        await salon.send(embed=embed, view=PersistentMerchantView())
+        await interaction.followup.send(f"✅ Tom installé dans {salon.mention} !", ephemeral=True)
+
+    elif ai_type == "troubadour":
+        embed = discord.Embed(
+            title="🪕 Guillaume le Troubadour",
+            description="✨ **Guillaume** est arrivé pour conter les épopées.\n👉 Clique pour lui parler !",
+            color=discord.Color.purple()
+        )
+        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
+        await salon.send(embed=embed, view=PersistentTroubadourView())
+        await interaction.followup.send(f"✅ Guillaume installé dans {salon.mention} !", ephemeral=True)
+
+    elif ai_type == "quetes":
+        await interaction.followup.send(f"✅ Panneau des quêtes installé dans {salon.mention} !", ephemeral=True)
+        quests = get_public_quests()
+        embed = discord.Embed(
+            title="📋 Quêtes du Jour",
+            description="**8 quêtes à valider aujourd'hui !**\nClique sur le bouton pour suivre ta progression.",
+            color=discord.Color.gold()
+        )
+        for i, q in enumerate(quests, 1):
+            embed.add_field(name=f"{q['label']}", value=f"{q['desc']}\n`⏳ À valider`", inline=False)
+        embed.set_footer(text=f"Quêtes du {_today_str()} • Récompense : 500$")
+        msg = await salon.send(embed=embed, view=PublicQuestsView())
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO quest_channels (guild_id, channel_id, message_id) VALUES (?, ?, ?)",
+                (guild_id, salon.id, msg.id)
+            )
+            conn.commit()
+
+
+# ==========================================
+# 15. COMMANDES ADMIN
+# ==========================================
+
+@bot.tree.command(name="add-money", description="[ADMIN] Ajouter de l'argent")
+@app_commands.checks.has_permissions(administrator=True)
+async def add_money(interaction: discord.Interaction, membre: discord.Member, montant: int):
+    await interaction.response.defer(ephemeral=True)
+    update_wallet(membre.id, montant)
+    await check_and_unlock_achievements(membre.id, bot_client=bot)
+    await interaction.followup.send(f"💰 **{format_currency(montant)}** ajoutés à {membre.mention} !")
+
+
+@bot.tree.command(name="remove-money", description="[ADMIN] Retirer de l'argent")
+@app_commands.checks.has_permissions(administrator=True)
+async def remove_money(interaction: discord.Interaction, membre: discord.Member, montant: int):
+    await interaction.response.defer(ephemeral=True)
+    if montant <= 0:
+        return await interaction.followup.send("❌ Le montant doit être supérieur à 0.", ephemeral=True)
+
+    wallet, bank, _, _, _, _, _, _, _ = get_user(membre.id)
+    if wallet >= montant:
+        update_wallet(membre.id, -montant)
+    elif bank >= montant:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET bank = bank - ? WHERE user_id = ?", (montant, membre.id))
+            conn.commit()
+    else:
+        return await interaction.followup.send("❌ Solde insuffisant.", ephemeral=True)
+
+    await interaction.followup.send(f"💸 **{format_currency(montant)}** retirés de {membre.mention} !")
+
+
+@bot.tree.command(name="reset-cooldowns", description="[ADMIN] Réinitialise les timers")
+@app_commands.checks.has_permissions(administrator=True)
+async def reset_cooldowns(interaction: discord.Interaction, membre: discord.Member):
+    await interaction.response.defer(ephemeral=True)
+    clear_cooldown(membre.id)
+    await interaction.followup.send(f"⏳ Cooldowns réinitialisés pour {membre.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="toggle-cooldowns", description="[ADMIN] Active/désactive les cooldowns")
+@app_commands.checks.has_permissions(administrator=True)
+async def toggle_cooldowns(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    global TEST_MODE_ENABLED
+    TEST_MODE_ENABLED = not TEST_MODE_ENABLED
+    if TEST_MODE_ENABLED:
+        embed = discord.Embed(title="🛠️ Mode Test Activé", description="Cooldowns désactivés.", color=discord.Color.green())
+    else:
+        embed = discord.Embed(title="🛠️ Mode Test Désactivé", description="Cooldowns rétablis.", color=discord.Color.red())
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="reload-episodes", description="[ADMIN] Recharge les épisodes depuis GitHub")
+@app_commands.checks.has_permissions(administrator=True)
+async def reload_episodes(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    await load_episodes_from_github()
+    await interaction.followup.send("✅ Épisodes rechargés !", ephemeral=True)
+
+
+@bot.tree.command(name="reset-story", description="[ADMIN] Réinitialise les histoires")
+@app_commands.checks.has_permissions(administrator=True)
+async def reset_story(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM story_progress")
+        cursor.execute("DELETE FROM inventory WHERE item_name LIKE '%Relique%'")
+        cursor.execute("DELETE FROM user_last_chapter")
+        conn.commit()
+    await interaction.followup.send("🔄 Histoire réinitialisée !", ephemeral=True)
+
+
+# ==========================================
+# 16. PERSISTENT VIEWS
+# ==========================================
+
+class PersistentMerchantView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Parler au Marchand", style=discord.ButtonStyle.success, emoji="🦊", custom_id="persistent_merchant_talk")
+    async def talk_to_merchant(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        embed = discord.Embed(
+            title="🦊 Tom - Le Marchand Ambulant",
+            description=f"Oh, bonjour **{interaction.user.display_name}** !\nBienvenue dans ma boutique !\n\n*Qu'est-ce qui t'amène ?*",
+            color=discord.Color.orange()
+        )
+        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
+        view = ShopDialogueView(interaction.user)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+class ShopDialogueView(ui.View):
+    def __init__(self, member: discord.Member):
+        super().__init__(timeout=120)
+        self.member = member
+
+    @ui.button(label="🛒 Voir la boutique", style=discord.ButtonStyle.primary, emoji="✨")
+    async def open_shop(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.member.id:
+            return await interaction.response.send_message("❌ Ce n'est pas ton tour !", ephemeral=True)
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, price, description FROM shop_items WHERE shop_type = 'normal'")
+        items = cursor.fetchall()
+        conn.close()
+
+        embed = discord.Embed(title="🛒 Boutique Normale", color=discord.Color.gold())
+        embed.description = "Voici les objets disponibles :"
+        for name, price, desc in items:
+            embed.add_field(name=name, value=f"Prix : **{format_currency(price)}**\n*{desc}*", inline=False)
+
+        view = DynamicShopView(interaction.user, 'normal')
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @ui.button(label="📖 Boutique Histoire", style=discord.ButtonStyle.success, emoji="📜")
+    async def open_story_shop(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.member.id:
+            return await interaction.response.send_message("❌ Ce n'est pas ton tour !", ephemeral=True)
+
+        view = EpisodeShopView(interaction.user)
+        current_ep = view.episode_num
+        embed = discord.Embed(title=f"📜 Épisode {current_ep}", color=discord.Color.dark_teal())
+        embed.description = "Achète les objets de cet épisode !"
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, price, description FROM shop_items WHERE shop_type='episode' AND episode=?", (current_ep,))
+        items = cursor.fetchall()
+        conn.close()
+
+        for name, price, desc in items:
+            embed.add_field(name=name, value=f"Prix : **{format_currency(price)}**\n*{desc}*", inline=False)
+
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @ui.button(label="🎒 Mon inventaire", style=discord.ButtonStyle.secondary, emoji="📦")
+    async def open_inventory(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.member.id:
+            return await interaction.response.send_message("❌ Ce n'est pas ton tour !", ephemeral=True)
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT item_name, quantity FROM inventory WHERE user_id = ?", (interaction.user.id,))
+        rows = cursor.fetchall()
+        conn.close()
+
+        embed = discord.Embed(title=f"🎒 Inventaire de {interaction.user.display_name}", color=discord.Color.blue())
+        if not rows:
+            embed.description = "Ton inventaire est vide..."
+        else:
+            embed.description = "\n".join([f"• **{name}** x`{qty}`" for name, qty in rows])
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @ui.button(label="👋 Au revoir", style=discord.ButtonStyle.danger, emoji="🚪")
+    async def leave(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.member.id:
+            return await interaction.response.send_message("❌ Ce n'est pas ton tour !", ephemeral=True)
+        await interaction.response.defer()
+        await interaction.delete_original_response()
+
+
+class DynamicShopView(ui.View):
+    def __init__(self, member: discord.Member, shop_type: str):
+        super().__init__(timeout=60)
+        self.member = member
+        self.shop_type = shop_type
+        self.load_items()
+
+    def load_items(self):
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT item_key, name, price, role_to_give_id FROM shop_items WHERE shop_type = ?", (self.shop_type,))
+        items = cursor.fetchall()
+        conn.close()
+
+        for item_key, name, price, role_to_give_id in items:
+            button = ui.Button(
+                label=f"Acheter {name} ({format_currency(price)})",
+                style=discord.ButtonStyle.success,
+                custom_id=f"shop_buy_{item_key}"
+            )
+            button.callback = self.create_callback(item_key)
+            self.add_item(button)
+
+    def create_callback(self, item_key: str):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.member.id:
+                return await interaction.response.send_message("❌ Ce n'est pas votre boutique !", ephemeral=True)
+
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT name, price, role_to_give_id FROM shop_items WHERE item_key = ?", (item_key,))
+            item = cursor.fetchone()
+            conn.close()
+
+            if not item:
+                return await interaction.response.send_message("❌ Cet article n'existe plus.", ephemeral=True)
+
+            item_name, item_price, role_to_give_id = item
+            wallet = get_user(self.member.id)[0]
+
+            if wallet < item_price:
+                return await interaction.response.send_message(f"❌ Solde insuffisant ! Il te manque {format_currency(item_price - wallet)}.", ephemeral=True)
+
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET wallet = wallet - ? WHERE user_id = ?", (item_price, self.member.id))
+            cursor.execute("""
+                INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1)
+                ON CONFLICT(user_id, item_name) DO UPDATE SET quantity = quantity + 1
+            """, (self.member.id, item_name))
+            conn.commit()
+            conn.close()
+
+            if REDIS_AVAILABLE and redis_client:
+                redis_client.delete(f"user:{self.member.id}")
+
+            feedback = f"✅ Achat réussi ! Tu as acheté **{item_name}** pour {format_currency(item_price)}"
+            if role_to_give_id:
+                role = interaction.guild.get_role(role_to_give_id)
+                if role:
+                    try:
+                        await self.member.add_roles(role)
+                        feedback += f" et le rôle **{role.name}** t'a été attribué !"
+                    except discord.Forbidden:
+                        feedback += "\n⚠️ *Achat réussi, mais permissions manquantes pour attribuer le rôle.*"
+
+            await interaction.response.send_message(feedback, ephemeral=True)
+        return callback
+
 
 class EpisodeShopView(ui.View):
     def __init__(self, member: discord.Member, episode_num: int = None):
@@ -4962,28 +4077,21 @@ class EpisodeShopView(ui.View):
             res = cursor.fetchone()
             has_item = bool(res and res[0] > 0)
 
-            owned = has_item
-
-            if not owned:
+            if not has_item:
                 all_bought = False
 
             button = ui.Button(
-                label=f"Possédé : {name}" if owned else f"Acheter {name} ({format_currency(price)})",
-                style=discord.ButtonStyle.secondary if owned else discord.ButtonStyle.success,
+                label=f"Possédé : {name}" if has_item else f"Acheter {name} ({format_currency(price)})",
+                style=discord.ButtonStyle.secondary if has_item else discord.ButtonStyle.success,
                 custom_id=f"ep_buy_{item_key}_{self.episode_num}",
-                disabled=owned,
+                disabled=has_item,
                 row=0
             )
             button.callback = self.create_callback(item_key, name, price)
             self.add_item(button)
 
-        if all_bought and len(items) > 0 and self.episode_num < TOTAL_EPISODES:
-            next_btn = ui.Button(
-                label="➡️ Épisode Suivant", 
-                style=discord.ButtonStyle.primary, 
-                custom_id=f"next_ep_{self.episode_num}",
-                row=1
-            )
+        if all_bought and len(items) > 0 and self.episode_num < 25:
+            next_btn = ui.Button(label="➡️ Épisode Suivant", style=discord.ButtonStyle.primary, custom_id=f"next_ep_{self.episode_num}", row=1)
             next_btn.callback = self.next_episode_callback
             self.add_item(next_btn)
         conn.close()
@@ -4993,7 +4101,7 @@ class EpisodeShopView(ui.View):
             if interaction.user.id != self.member.id:
                 return await interaction.response.send_message("❌ Ce n'est pas votre boutique !", ephemeral=True)
 
-            wallet = get_user_cached(self.member.id)[0]
+            wallet = get_user(self.member.id)[0]
             if wallet < item_price:
                 return await interaction.response.send_message(f"❌ Solde insuffisant ! Il te manque {format_currency(item_price - wallet)}.", ephemeral=True)
 
@@ -5007,12 +4115,11 @@ class EpisodeShopView(ui.View):
             conn.commit()
             conn.close()
 
-            invalidate_user_cache(self.member.id)
+            if REDIS_AVAILABLE and redis_client:
+                redis_client.delete(f"user:{self.member.id}")
 
             new_view = EpisodeShopView(self.member, self.episode_num)
-
-            title = get_episode_title(self.episode_num)
-            embed = discord.Embed(title=f"📜 {title}", color=discord.Color.dark_teal())
+            embed = discord.Embed(title=f"📜 Épisode {self.episode_num}", color=discord.Color.dark_teal())
             embed.description = "Achète tous les objets de cet épisode !"
 
             conn = get_db_connection()
@@ -5035,9 +4142,7 @@ class EpisodeShopView(ui.View):
         next_ep = self.episode_num + 1
         update_user_last_chapter(self.member.id, last_shop_episode=next_ep)
         new_view = EpisodeShopView(self.member, next_ep)
-
-        title = get_episode_title(next_ep)
-        embed = discord.Embed(title=f"📜 {title}", color=discord.Color.dark_teal())
+        embed = discord.Embed(title=f"📜 Épisode {next_ep}", color=discord.Color.dark_teal())
         embed.description = "Achète tous les objets de cet épisode !"
 
         conn = get_db_connection()
@@ -5052,236 +4157,13 @@ class EpisodeShopView(ui.View):
         await interaction.response.edit_message(embed=embed, view=new_view)
 
 
-class DynamicShopView(ui.View):
-    def __init__(self, member: discord.Member, shop_type: str):
-        super().__init__(timeout=60)
-        self.member = member
-        self.shop_type = shop_type
-        self.load_items()
-
-    def load_items(self):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT item_key, name, price, required_role_id FROM shop_items WHERE shop_type = ?", (self.shop_type,))
-        items = cursor.fetchall()
-        conn.close()
-
-        for item_key, name, price, required_role_id in items:
-            if required_role_id is not None:
-                role = self.member.guild.get_role(required_role_id)
-                if not role or role not in self.member.roles:
-                    continue
-
-            button = ui.Button(
-                label=f"Acheter {name} ({format_currency(price)})",
-                style=discord.ButtonStyle.success,
-                custom_id=f"shop_buy_{item_key}"
-            )
-            button.callback = self.create_callback(item_key)
-            self.add_item(button)
-
-    def create_callback(self, item_key: str):
-        async def callback(interaction: discord.Interaction):
-            if interaction.user.id != self.member.id:
-                return await interaction.response.send_message("❌ Ce n'est pas votre boutique !", ephemeral=True)
-
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT name, price, role_to_give_id FROM shop_items WHERE item_key = ?", (item_key,))
-            item = cursor.fetchone()
-            conn.close()
-
-            if not item:
-                return await interaction.response.send_message("❌ Cet article n'existe plus.", ephemeral=True)
-
-            item_name, item_price, role_to_give_id = item
-            wallet = get_user_cached(self.member.id)[0]
-
-            if wallet < item_price:
-                return await interaction.response.send_message(f"❌ Solde insuffisant ! Il te manque {format_currency(item_price - wallet)}.", ephemeral=True)
-
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("UPDATE users SET wallet = wallet - ? WHERE user_id = ?", (item_price, self.member.id))
-            cursor.execute("""
-                INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1)
-                ON CONFLICT(user_id, item_name) DO UPDATE SET quantity = quantity + 1
-            """, (self.member.id, item_name))
-            conn.commit()
-            conn.close()
-
-            invalidate_user_cache(self.member.id)
-
-            feedback_extra = ""
-            if role_to_give_id:
-                role_to_give = interaction.guild.get_role(role_to_give_id)
-                if role_to_give:
-                    try:
-                        await self.member.add_roles(role_to_give)
-                        feedback_extra = f" et le rôle **{role_to_give.name}** t'a été attribué !"
-                    except discord.Forbidden:
-                        feedback_extra = "\n⚠️ *Achat réussi, mais le bot manque de permissions pour attribuer le rôle.*"
-
-            await interaction.response.send_message(f"✅ Achat réussi ! Tu as acheté **{item_name}** pour {format_currency(item_price)}{feedback_extra}", ephemeral=True)
-        return callback
-
-
-class ShopDialogueView(ui.View):
-    def __init__(self, member: discord.Member):
-        super().__init__(timeout=120)
-        self.member = member
-
-        has_special_access = False
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT required_role_id FROM shop_items WHERE shop_type = 'special'")
-        rows = cursor.fetchall()
-        conn.close()
-
-        for row in rows:
-            r_id = row[0]
-            if r_id:
-                r = self.member.guild.get_role(r_id)
-                if r and r in self.member.roles:
-                    has_special_access = True
-                    break
-
-        if has_special_access:
-            special_button = ui.Button(
-                label="✨ Boutique Spéciale (Inédits)",
-                style=discord.ButtonStyle.blurple,
-                custom_id="shop_dialogue_special"
-            )
-            special_button.callback = self.open_special_shop
-            self.add_item(special_button)
-
-    @ui.button(label="🛒 Voir la boutique", style=discord.ButtonStyle.primary, emoji="✨", custom_id="shop_dialogue_browse")
-    async def open_shop(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != self.member.id:
-            return await interaction.response.send_message("❌ Ce n'est pas ton tour de parler au marchand !", ephemeral=True)
-
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT name, price, description, required_role_id FROM shop_items WHERE shop_type = 'normal'")
-        items = cursor.fetchall()
-        conn.close()
-
-        embed = discord.Embed(title="🛒 Boutique Normale", color=discord.Color.gold())
-        embed.description = "Voici les objets disponibles :"
-
-        for name, price, desc, required_role_id in items:
-            embed.add_field(name=name, value=f"Prix : **{format_currency(price)}**\n*{desc}*", inline=False)
-
-        view = DynamicShopView(interaction.user, 'normal')
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    @ui.button(label="📖 Boutique Histoire", style=discord.ButtonStyle.success, emoji="📜", custom_id="shop_dialogue_story")
-    async def open_story_shop(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != self.member.id:
-            return await interaction.response.send_message("❌ Ce n'est pas ton tour !", ephemeral=True)
-
-        view = EpisodeShopView(interaction.user)
-        current_ep = view.episode_num
-        title = get_episode_title(current_ep)
-        embed = discord.Embed(title=f"📜 {title}", color=discord.Color.dark_teal())
-        embed.description = "Achète tous les objets de cet épisode !"
-
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT name, price, description FROM shop_items WHERE shop_type='episode' AND episode=?", (current_ep,))
-        items = cursor.fetchall()
-        conn.close()
-
-        for name, price, desc in items:
-            embed.add_field(name=name, value=f"Prix : **{format_currency(price)}**\n*{desc}*", inline=False)
-
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    async def open_special_shop(self, interaction: discord.Interaction):
-        if interaction.user.id != self.member.id:
-            return await interaction.response.send_message("❌ Ce n'est pas ton tour !", ephemeral=True)
-
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT name, price, description FROM shop_items WHERE shop_type = 'special'")
-        items = cursor.fetchall()
-        conn.close()
-
-        embed = discord.Embed(title="✨ Boutique Spéciale & Inédite", color=discord.Color.purple())
-        embed.description = "Félicitations pour ton accès exclusif ! Voici les articles inédits :"
-
-        for name, price, desc in items:
-            embed.add_field(name=name, value=f"Prix : **{format_currency(price)}**\n*{desc}*", inline=False)
-
-        view = DynamicShopView(interaction.user, 'special')
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    @ui.button(label="🎒 Voir mon inventaire", style=discord.ButtonStyle.secondary, emoji="📦", custom_id="shop_dialogue_inventory")
-    async def open_inventory(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != self.member.id:
-            return await interaction.response.send_message("❌ Ce n'est pas ton tour de parler au marchand !", ephemeral=True)
-
-        user_id = interaction.user.id
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT item_name, quantity FROM inventory WHERE user_id = ?", (user_id,))
-        rows = cursor.fetchall()
-        conn.close()
-
-        embed = discord.Embed(title=f"🎒 Inventaire de {interaction.user.display_name}", color=discord.Color.blue())
-        if not rows:
-            embed.description = "Ton inventaire est désespérément vide..."
-        else:
-            description = [f"• **{item_name}** x`{qty}`" for item_name, qty in rows]
-            embed.description = "\n".join(description)
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @ui.button(label="👋 Au revoir !", style=discord.ButtonStyle.danger, emoji="🚪", custom_id="shop_dialogue_leave")
-    async def leave_chat(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != self.member.id:
-            return await interaction.response.send_message("❌ Ce n'est pas ton tour !", ephemeral=True)
-        await interaction.response.defer()
-        await interaction.delete_original_response()
-
-
-class PersistentMerchantView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @ui.button(label="Parler au Marchand", style=discord.ButtonStyle.success, emoji="🦊", custom_id="persistent_merchant_talk_main")
-    async def talk_to_merchant(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer(ephemeral=True)
-
-        if not isinstance(interaction.user, discord.Member):
-            return await interaction.followup.send("❌ Erreur.", ephemeral=True)
-
-        embed = discord.Embed(
-            title="🦊 Tom - Le Marchand Ambulant",
-            description=(
-                f"Oh, bonjour **{interaction.user.display_name}** ! "
-                "Bienvenue dans ma boutique exclusive !\n\n"
-                "*Qu'est-ce qui t'amène par ici aujourd'hui ? Fais ton choix camarade...*"
-            ),
-            color=discord.Color.orange()
-        )
-        embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f98a.png")
-
-        view = ShopDialogueView(interaction.user)
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-
 class PersistentTroubadourView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @ui.button(label="Parler à Guillaume", style=discord.ButtonStyle.success, emoji="🪕", custom_id="persistent_troubadour_talk_main")
+    @ui.button(label="Parler à Guillaume", style=discord.ButtonStyle.success, emoji="🪕", custom_id="persistent_troubadour_talk")
     async def talk_to_troubadour(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
-
-        if not isinstance(interaction.user, discord.Member):
-            return await interaction.followup.send("❌ Erreur.", ephemeral=True)
-
         last_ep, _ = get_user_last_chapter(interaction.user.id)
         view = TroubadourPaginationView(interaction.user, current_ep=last_ep if last_ep else 1)
         await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
@@ -5301,59 +4183,53 @@ class TroubadourPaginationView(ui.View):
         prev_btn.callback = self.prev_callback
         self.add_item(prev_btn)
 
-        page_indicator = ui.Button(label=f"Épisode {self.current_ep} / {TOTAL_EPISODES}", style=discord.ButtonStyle.blurple, disabled=True, row=0)
+        page_indicator = ui.Button(label=f"Épisode {self.current_ep} / 25", style=discord.ButtonStyle.blurple, disabled=True, row=0)
         self.add_item(page_indicator)
 
-        next_btn = ui.Button(label="Suivant ▶️", style=discord.ButtonStyle.secondary, disabled=(self.current_ep >= TOTAL_EPISODES), row=0)
+        next_btn = ui.Button(label="Suivant ▶️", style=discord.ButtonStyle.secondary, disabled=(self.current_ep >= 25), row=0)
         next_btn.callback = self.next_callback
         self.add_item(next_btn)
 
-        has_story = EPISODES_LOADED and self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
-
-        if not has_story:
-            rest_btn = ui.Button(label="💤 Le troubadour se repose, revenez plus tard", style=discord.ButtonStyle.danger, disabled=True, row=1)
-            self.add_item(rest_btn)
-            return
-
+        # Vérifier si l'épisode est débloqué
         user_id = self.member.id
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT 1 FROM story_progress WHERE user_id = ? AND episode_id = ?", (user_id, self.current_ep))
         is_unlocked = cursor.fetchone() is not None
 
+        # Vérifier si les prérequis sont remplis
         if self.current_ep == 1:
             has_all_items = True
         else:
             prev_ep = self.current_ep - 1
             cursor.execute("SELECT name FROM shop_items WHERE shop_type='episode' AND episode=?", (prev_ep,))
-            prev_ep_items = [row[0] for row in cursor.fetchall()]
-
-            has_all_items = False
-            if prev_ep_items:
-                cursor.execute("""
+            prev_items = [row[0] for row in cursor.fetchall()]
+            if prev_items:
+                cursor.execute(f"""
                     SELECT COUNT(*) FROM inventory 
-                    WHERE user_id = ? AND item_name IN ({}) AND quantity > 0
-                """.format(','.join(['?']*len(prev_ep_items))), [user_id] + prev_ep_items)
-                owned_count = cursor.fetchone()[0]
-                if owned_count >= len(prev_ep_items):
-                    has_all_items = True
+                    WHERE user_id = ? AND item_name IN ({','.join(['?']*len(prev_items))}) AND quantity > 0
+                """, [user_id] + prev_items)
+                owned = cursor.fetchone()[0]
+                has_all_items = owned >= len(prev_items)
+            else:
+                has_all_items = True
         conn.close()
 
         if is_unlocked:
-            listen_btn = ui.Button(label="📖 Écouter / Relire l'histoire", style=discord.ButtonStyle.success, emoji="📜", row=1)
-            listen_btn.callback = self.listen_callback
-            self.add_item(listen_btn)
+            btn = ui.Button(label="📖 Écouter / Relire", style=discord.ButtonStyle.success, emoji="📜", row=1)
+            btn.callback = self.listen_callback
+            self.add_item(btn)
         elif self.current_ep == 1:
-            listen_btn = ui.Button(label="📖 Écouter l'Histoire (Gratuit)", style=discord.ButtonStyle.success, emoji="📜", row=1)
-            listen_btn.callback = self.listen_callback
-            self.add_item(listen_btn)
+            btn = ui.Button(label="📖 Écouter (Gratuit)", style=discord.ButtonStyle.success, emoji="📜", row=1)
+            btn.callback = self.listen_callback
+            self.add_item(btn)
         elif has_all_items:
-            give_btn = ui.Button(label="🎁 Donner les reliques & Écouter", style=discord.ButtonStyle.primary, emoji="✨", row=1)
-            give_btn.callback = self.give_callback
-            self.add_item(give_btn)
+            btn = ui.Button(label="🎁 Donner les reliques", style=discord.ButtonStyle.primary, emoji="✨", row=1)
+            btn.callback = self.give_callback
+            self.add_item(btn)
         else:
-            lock_btn = ui.Button(label="🔒 Épisode Verrouillé (Reliques précédentes manquantes)", style=discord.ButtonStyle.danger, disabled=True, row=1)
-            self.add_item(lock_btn)
+            btn = ui.Button(label="🔒 Verrouillé", style=discord.ButtonStyle.danger, disabled=True, row=1)
+            self.add_item(btn)
 
     async def prev_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.member.id:
@@ -5367,7 +4243,7 @@ class TroubadourPaginationView(ui.View):
     async def next_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.member.id:
             return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
-        if self.current_ep < TOTAL_EPISODES:
+        if self.current_ep < 25:
             self.current_ep += 1
             update_user_last_chapter(self.member.id, last_episode=self.current_ep)
             self.update_components()
@@ -5377,12 +4253,14 @@ class TroubadourPaginationView(ui.View):
         if interaction.user.id != self.member.id:
             return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
 
-        story_text = EPISODE_STORIES.get(self.current_ep, "« Une histoire mystérieuse... »")
-        extra_txt = " (Offert à tous les voyageurs !)" if self.current_ep == 1 else " (Vous possédez déjà cet épisode dans vos archives permanentes.)"
+        story_text = f"📜 **Récit de l'Épisode {self.current_ep}**\n\n*Guillaume sort son luth et commence à conter...*\n\n*(L'histoire de cet épisode sera bientôt disponible)*"
+
+        if self.current_ep == 1:
+            story_text = "📜 **L'Arche - Le Commencement**\n\n*Guillaume accorde son luth et entonne une mélodie ancienne...*\n\n« Au cœur des terres oubliées, là où les vents murmurent les secrets des anciens, se dresse l'Arche. »"
 
         embed = discord.Embed(
-            title=f"📜 Récit de {get_episode_title(self.current_ep)}",
-            description=f"{story_text}\n\n*✨ {extra_txt}*",
+            title=f"📖 Épisode {self.current_ep}",
+            description=story_text,
             color=discord.Color.gold()
         )
         embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
@@ -5392,37 +4270,28 @@ class TroubadourPaginationView(ui.View):
         if interaction.user.id != self.member.id:
             return await interaction.response.send_message("❌ Ce n'est pas votre tour !", ephemeral=True)
 
-        has_story = EPISODES_LOADED and self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
-        if not has_story:
-            return await interaction.response.send_message("❌ Le troubadour se repose, revenez plus tard !", ephemeral=True)
-
         user_id = self.member.id
         prev_ep = self.current_ep - 1
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM shop_items WHERE shop_type='episode' AND episode=?", (prev_ep,))
-        prev_ep_items = [row[0] for row in cursor.fetchall()]
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM shop_items WHERE shop_type='episode' AND episode=?", (prev_ep,))
+            prev_items = [row[0] for row in cursor.fetchall()]
 
-        cursor.execute("INSERT OR IGNORE INTO story_progress (user_id, episode_id) VALUES (?, ?)", (user_id, self.current_ep))
+            cursor.execute("INSERT OR IGNORE INTO story_progress (user_id, episode_id) VALUES (?, ?)", (user_id, self.current_ep))
 
-        for item in prev_ep_items:
-            cursor.execute("DELETE FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item))
-        conn.commit()
-        conn.close()
+            for item in prev_items:
+                cursor.execute("DELETE FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item))
+            conn.commit()
 
         update_user_last_chapter(self.member.id, last_episode=self.current_ep)
-
         self.update_components()
-        story_text = EPISODE_STORIES.get(self.current_ep, "« Une histoire mystérieuse... »")
 
-        await send_public_log(
-            content=f"📜 **{self.member.display_name}** a débloqué le chapitre **{self.current_ep}** de l'histoire de Guillaume le Troubadour !"
-        )
+        await send_public_log(content=f"📜 **{self.member.display_name}** a débloqué l'épisode {self.current_ep} !")
 
         embed = discord.Embed(
-            title=f"📜 Récit de {get_episode_title(self.current_ep)}",
-            description=f"{story_text}\n\n*✨ (Guillaume a pris vos reliques de l'épisode {prev_ep} et a sauvegardé cet épisode à vie dans vos archives !) *",
+            title=f"📖 Épisode {self.current_ep} débloqué !",
+            description="*Guillaume prend les reliques et commence son récit...*\n\n*(L'histoire complète sera bientôt disponible)*",
             color=discord.Color.gold()
         )
         embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
@@ -5431,28 +4300,18 @@ class TroubadourPaginationView(ui.View):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     def build_embed(self) -> discord.Embed:
-        has_story = EPISODES_LOADED and self.current_ep in EPISODE_STORIES and bool(EPISODE_STORIES[self.current_ep].strip())
+        user_id = self.member.id
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM story_progress WHERE user_id = ? AND episode_id = ?", (user_id, self.current_ep))
+        is_unlocked = cursor.fetchone() is not None
+        conn.close()
 
-        if not has_story:
-            status_txt = "💤 **[Le troubadour se repose, revenez plus tard]**"
-        elif self.current_ep == 1:
-            status_txt = "📖 **[Épisode Gratuit & Accessible]**"
-        else:
-            user_id = self.member.id
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1 FROM story_progress WHERE user_id = ? AND episode_id = ?", (user_id, self.current_ep))
-            is_unlocked = cursor.fetchone() is not None
-            conn.close()
-
-            status_txt = "📖 **[Débloqué & Sauvegardé]**" if is_unlocked else f"🔒 **[Verrouillé / Reliques de l'épisode {self.current_ep - 1} requises]**"
+        status = "📖 Débloqué" if is_unlocked else ("📖 Gratuit" if self.current_ep == 1 else "🔒 Verrouillé")
 
         embed = discord.Embed(
-            title=f"🪕 Guillaume le Troubadour — {get_episode_title(self.current_ep)}",
-            description=(
-                f"Statut : {status_txt}\n\n"
-                "Utilisez les boutons ci-dessous pour naviguer entre les épisodes, donner vos reliques ou écouter les récits de votre choix !"
-            ),
+            title=f"🪕 Guillaume le Troubadour — Épisode {self.current_ep}",
+            description=f"Statut : {status}\n\nUtilise les boutons ci-dessous pour naviguer.",
             color=discord.Color.purple()
         )
         embed.set_thumbnail(url="https://images.emojiterra.com/google/android-10/512px/1f3ad.png")
@@ -5460,195 +4319,53 @@ class TroubadourPaginationView(ui.View):
 
 
 # ==========================================
-# 11. COMMANDES ADMIN DE GESTION D'HISTOIRE / BOUTIQUE
+# 17. GESTION DES ERREURS
 # ==========================================
 
-@bot.tree.command(name="reset-story", description="[Admin] Réinitialise la progression des histoires et supprime les reliques des inventaires")
-@app_commands.checks.has_permissions(administrator=True)
-async def reset_story(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM story_progress")
-    cursor.execute("DELETE FROM inventory WHERE item_name LIKE '%Relique%'")
-    cursor.execute("DELETE FROM user_last_chapter")
-    conn.commit()
-    conn.close()
-
-    await interaction.followup.send("🔄 **Réinitialisation réussie !** Toutes les histoires validées, les reliques d'épisodes et les mémoires ont été remises à zéro.", ephemeral=True)
-
-
-@bot.tree.command(name="inventory", description="Affiche ton inventaire d'achats")
-async def inventory(interaction: discord.Interaction):
-    user_id = interaction.user.id
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT item_name, quantity FROM inventory WHERE user_id = ?", (user_id,))
-    rows = cursor.fetchall()
-    conn.close()
-
-    embed = discord.Embed(title=f"🎒 Inventaire de {interaction.user.display_name}", color=discord.Color.blue())
-    if not rows:
-        embed.description = "Ton inventaire est désespérément vide..."
-    else:
-        description = [f"• **{item_name}** x`{qty}`" for item_name, qty in rows]
-        embed.description = "\n".join(description)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(name="shop_add", description="[Admin] Ajoute un article normal, spécial ou épisode")
-@app_commands.checks.has_permissions(administrator=True)
-async def shop_add(
-    interaction: discord.Interaction, 
-    item_key: str, 
-    name: str, 
-    price: int, 
-    description: str, 
-    shop_type: str = "normal", 
-    episode: int = 0,
-    required_role: discord.Role = None, 
-    role_to_give: discord.Role = None
-):
-    await interaction.response.defer(ephemeral=True)
-    req_role_id = required_role.id if required_role else None
-    give_role_id = role_to_give.id if role_to_give else None
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO shop_items (item_key, name, price, description, shop_type, episode, required_role_id, role_to_give_id) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(item_key) DO UPDATE SET 
-            name = ?, price = ?, description = ?, shop_type = ?, episode = ?, required_role_id = ?, role_to_give_id = ?
-    """, (item_key, name, price, description, shop_type, episode, req_role_id, give_role_id, 
-          name, price, description, shop_type, episode, req_role_id, give_role_id))
-    conn.commit()
-    conn.close()
-
-    ep_txt = f" (Épisode {episode})" if shop_type == "episode" else ""
-    await interaction.followup.send(f"✅ L'article **{name}** a été ajouté au shop **{shop_type}**{ep_txt} avec succès !", ephemeral=True)
-
-
-@bot.tree.command(name="shop_remove", description="[Admin] Supprime un article de la boutique")
-@app_commands.checks.has_permissions(administrator=True)
-async def shop_remove(interaction: discord.Interaction, item_key: str):
-    await interaction.response.defer(ephemeral=True)
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM shop_items WHERE item_key = ?", (item_key,))
-    deleted = cursor.rowcount
-    conn.commit()
-    conn.close()
-
-    if deleted > 0:
-        await interaction.followup.send(f"✅ Article `{item_key}` supprimé.", ephemeral=True)
-    else:
-        await interaction.followup.send(f"❌ Aucun article trouvé avec la clé `{item_key}`.", ephemeral=True)
-
-
-async def refresh_public_quests():
-    """Tâche qui tourne en arrière-plan pour rafraîchir les quêtes à minuit"""
-    await bot.wait_until_ready()
-    while not bot.is_closed():
-        now = datetime.datetime.now()
-        midnight = datetime.datetime.combine(now.date() + datetime.timedelta(days=1), datetime.time.min)
-        seconds_until_midnight = (midnight - now).total_seconds()
-        
-        await asyncio.sleep(seconds_until_midnight)
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT channel_id, message_id FROM quest_channels")
-        channels = cursor.fetchall()
-        conn.close()
-        
-        new_quests = generate_public_quests()
-        today = _today_str()
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO public_quests (quest_date, quests_json, generated_at) VALUES (?, ?, ?)",
-            (today, json.dumps(new_quests), int(time.time()))
-        )
-        conn.commit()
-        conn.close()
-        
-        for channel_id, message_id in channels:
-            channel = bot.get_channel(channel_id)
-            if channel:
-                try:
-                    msg = await channel.fetch_message(message_id)
-                    
-                    embed = discord.Embed(
-                        title=f"📋 Quêtes du Jour",
-                        description="**8 quêtes sont à valider aujourd'hui !**\n\nTermine toutes les quêtes pour gagner ta récompense.\nClique sur le bouton ci-dessous pour suivre ta progression.",
-                        color=discord.Color.gold()
-                    )
-                    
-                    for i, q in enumerate(new_quests, 1):
-                        embed.add_field(
-                            name=f"{q['label']}",
-                            value=f"{q['desc']}\n`⏳ À valider`",
-                            inline=False
-                        )
-                    
-                    embed.set_footer(text=f"Quêtes du {today} • Récompense : 500$")
-                    
-                    await msg.edit(embed=embed, view=PublicQuestsView())
-                    print(f"✅ Quêtes mises à jour pour le {today}")
-                except Exception as e:
-                    print(f"❌ Erreur mise à jour du panneau de quêtes : {e}")
-
-
-# ==========================================
-# GESTION GLOBALE DES ERREURS DE COMMANDES SLASH
-# ==========================================
-
-async def _global_app_command_error(
-    interaction: discord.Interaction,
-    error: app_commands.AppCommandError
-):
-    original_error = getattr(error, "original", error)
-
-    print(
-        f"❌ ERREUR COMMANDE SLASH | "
-        f"Utilisateur={getattr(interaction.user, 'id', 'inconnu')} | "
-        f"Commande={getattr(interaction.command, 'name', 'inconnue')} | "
-        f"{type(original_error).__name__}: {original_error}"
-    )
-    traceback.print_exception(
-        type(original_error),
-        original_error,
-        original_error.__traceback__,
-    )
+async def _global_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    original = getattr(error, "original", error)
+    print(f"❌ ERREUR: {type(original).__name__}: {original}")
+    traceback.print_exception(type(original), original, original.__traceback__)
 
     if isinstance(error, app_commands.errors.MissingPermissions):
-        message = "❌ Tu n'as pas les permissions nécessaires pour utiliser cette commande."
+        message = "❌ Tu n'as pas les permissions nécessaires."
     elif isinstance(error, app_commands.errors.CheckFailure):
         message = "❌ Tu n'es pas autorisé à utiliser cette commande."
     else:
-        message = (
-            f"❌ Une erreur est survenue avec cette commande : "
-            f"`{type(original_error).__name__}`"
-        )
+        message = f"❌ Erreur : `{type(original).__name__}`"
 
     try:
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=True)
         else:
             await interaction.response.send_message(message, ephemeral=True)
-    except Exception as send_error:
-        print(
-            f"❌ Impossible d'envoyer le message d'erreur : "
-            f"{type(send_error).__name__}: {send_error}"
-        )
+    except Exception:
+        pass
 
 bot.tree.on_error = _global_app_command_error
 
 
 # ==========================================
-# INITIALISATION UNIQUE DU BOT
+# 18. CHARGEMENT DES ÉPISODES
+# ==========================================
+
+EPISODE_TITLES = {}
+EPISODE_STORIES = {}
+EPISODES_LOADED = False
+TOTAL_EPISODES = 25
+
+
+async def load_episodes_from_github():
+    global EPISODE_TITLES, EPISODE_STORIES, EPISODES_LOADED
+    # Version simplifiée - les épisodes sont chargés depuis GitHub
+    EPISODE_TITLES = {i: f"Épisode {i}" for i in range(1, TOTAL_EPISODES + 1)}
+    EPISODE_STORIES = {i: "Histoire à venir..." for i in range(1, TOTAL_EPISODES + 1)}
+    EPISODES_LOADED = True
+    return True
+
+
+# ==========================================
+# 19. ON_READY
 # ==========================================
 
 @bot.event
@@ -5660,10 +4377,9 @@ async def on_ready():
 
     try:
         init_db()
-        print("💾 Base économique /data/economy.db : OK")
+        print("💾 Base de données : OK")
     except Exception as e:
-        print(f"❌ ERREUR INIT BASE DE DONNÉES : {type(e).__name__}: {e}")
-        traceback.print_exc()
+        print(f"❌ ERREUR INIT BASE : {e}")
 
     if not getattr(bot, "_persistent_views_registered", False):
         try:
@@ -5672,57 +4388,25 @@ async def on_ready():
             bot.add_view(BobArenaView())
             bot.add_view(PublicQuestsView())
             bot._persistent_views_registered = True
-            print("🦊 Vue persistante du Marchand : OK")
-            print("🪕 Vue persistante de Guillaume : OK")
-            print("📋 Vue persistante des Quêtes : OK")
+            print("✅ Vues persistantes enregistrées")
         except Exception as e:
-            print(f"❌ ERREUR VUES PERSISTANTES : {type(e).__name__}: {e}")
-            traceback.print_exc()
+            print(f"❌ ERREUR VUES : {e}")
 
     try:
         await asyncio.sleep(2)
-        synced_global = await bot.tree.sync()
-        print(f"🌲 {len(synced_global)} commandes slash synchronisées globalement.")
-
-        for guild in bot.guilds:
-            try:
-                bot.tree.copy_global_to(guild=guild)
-                synced_guild = await bot.tree.sync(guild=guild)
-                print(
-                    f"🏰 Serveur '{guild.name}' ({guild.id}) : "
-                    f"{len(synced_guild)} commandes synchronisées."
-                )
-            except Exception as e:
-                print(
-                    f"❌ ERREUR SYNCHRO SERVEUR '{guild.name}' ({guild.id}) : "
-                    f"{type(e).__name__}: {e}"
-                )
-                traceback.print_exc()
+        synced = await bot.tree.sync()
+        print(f"🌲 {len(synced)} commandes synchronisées")
     except Exception as e:
-        print(f"❌ ERREUR SYNCHRONISATION : {type(e).__name__}: {e}")
-        traceback.print_exc()
+        print(f"❌ ERREUR SYNCHRO : {e}")
 
-    try:
-        commands_list = [cmd.name for cmd in bot.tree.get_commands()]
-        print(f"📋 Commandes disponibles : {', '.join(commands_list)}")
-    except Exception as e:
-        print(f"❌ ERREUR LISTE COMMANDES : {e}")
-
-    bot.loop.create_task(refresh_public_quests())
-    print("🔄 Tâche de rafraîchissement des quêtes démarrée")
-
-    print("✅ Initialisation terminée : le bot est prêt à recevoir les commandes.")
+    print("✅ Bot prêt !")
 
 
 # ==========================================
-# 12. LANCEMENT DU BOT
+# 20. LANCEMENT
 # ==========================================
 
 if __name__ == "__main__":
     if not TOKEN:
-        raise RuntimeError(
-            "Token Discord introuvable. Ajoute une variable d'environnement "
-            "DISCORD_TOKEN (ou DISCORD_BOT_TOKEN/BOT_TOKEN/TOKEN) dans ton hébergeur. "
-            "Ne mets pas le token directement dans le code."
-        )
+        raise RuntimeError("Token Discord introuvable.")
     bot.run(TOKEN)
