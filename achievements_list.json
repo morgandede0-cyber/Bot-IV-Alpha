@@ -1,451 +1,451 @@
 {
-  "quest_bapteme": {
+  "1": {
+    "key": "quest_bapteme",
     "title": "Baptême du Feu",
     "desc": "Déclencher sa toute première quête journalière via /quetes.",
     "thresholds": { "1": 1 },
     "rewards": { "1": 100 },
-    "order": 1,
     "category": "Quêtes",
     "tier": "Commun"
   },
-  "quest_habitué": {
+  "2": {
+    "key": "quest_habitué",
     "title": "Habitué des Missions",
     "desc": "Valider un total de 10 quêtes journalières via /quetes.",
     "thresholds": { "1": 10 },
     "rewards": { "1": 200 },
-    "order": 2,
     "category": "Quêtes",
     "tier": "Rare"
   },
-  "quest_veteran": {
+  "3": {
+    "key": "quest_veteran",
     "title": "Vétéran des Commandes",
     "desc": "Compléter 50 quêtes journalières avec succès.",
     "thresholds": { "1": 50 },
     "rewards": { "1": 500 },
-    "order": 3,
     "category": "Quêtes",
     "tier": "Épique"
   },
-  "quest_seigneur": {
+  "4": {
+    "key": "quest_seigneur",
     "title": "Seigneur des Chroniques",
     "desc": "Venir à bout de 150 quêtes journalières sur le serveur.",
     "thresholds": { "1": 150 },
     "rewards": { "1": 1000 },
-    "order": 4,
     "category": "Quêtes",
     "tier": "Mythique"
   },
-  "quest_legende": {
+  "5": {
+    "key": "quest_legende",
     "title": "Légende de l'Aventure",
     "desc": "Atteindre le palier ultime de 500 quêtes journalières validées.",
     "thresholds": { "1": 500 },
     "rewards": { "1": 2500 },
-    "order": 5,
     "category": "Quêtes",
     "tier": "Légendaire"
   },
-  "arena_essai": {
+  "6": {
+    "key": "arena_essai",
     "title": "Coup d'Essai",
     "desc": "Effectuer son premier combat d'entraînement dans l'arène de Bob.",
     "thresholds": { "1": 1 },
     "rewards": { "1": 100 },
-    "order": 6,
     "category": "Arène",
     "tier": "Commun"
   },
-  "arena_assidu": {
+  "7": {
+    "key": "arena_assidu",
     "title": "Combattant Assidu",
     "desc": "Disputer 10 duels d'entraînement dans l'arène.",
     "thresholds": { "1": 10 },
     "rewards": { "1": 200 },
-    "order": 7,
     "category": "Arène",
     "tier": "Rare"
   },
-  "arena_guerrier": {
+  "8": {
+    "key": "arena_guerrier",
     "title": "Guerrier de l'Arène",
     "desc": "Remporter 25 combats face au maître d'arme.",
     "thresholds": { "1": 25 },
     "rewards": { "1": 500 },
-    "order": 8,
     "category": "Arène",
     "tier": "Épique"
   },
-  "arena_champion": {
+  "9": {
+    "key": "arena_champion",
     "title": "Champion des Lices",
     "desc": "Triompher lors de 75 affrontements dans l'arène.",
     "thresholds": { "1": 75 },
     "rewards": { "1": 1000 },
-    "order": 9,
     "category": "Arène",
     "tier": "Mythique"
   },
-  "arena_terreur": {
+  "10": {
+    "key": "arena_terreur",
     "title": "Terreur des Gladiateurs",
     "desc": "Dominer l'arène en décrochant 200 victoires éclatantes.",
     "thresholds": { "1": 200 },
     "rewards": { "1": 2500 },
-    "order": 10,
     "category": "Arène",
     "tier": "Légendaire"
   },
-  "pmu_premier": {
+  "11": {
+    "key": "pmu_premier",
     "title": "Mise Initiale",
     "desc": "Placer sa première mise sur un cheval chez Brook ou via /pmu.",
     "thresholds": { "1": 1 },
     "rewards": { "1": 100 },
-    "order": 11,
     "category": "PMU",
     "tier": "Commun"
   },
-  "pmu_averti": {
+  "12": {
+    "key": "pmu_averti",
     "title": "Parieur Averti",
     "desc": "Placer 10 paris hippiques validés.",
     "thresholds": { "1": 10 },
     "rewards": { "1": 200 },
-    "order": 12,
     "category": "PMU",
     "tier": "Rare"
   },
-  "pmu_connaisseur": {
+  "13": {
+    "key": "pmu_connaisseur",
     "title": "Fin connaisseur",
     "desc": "Gagner 25 paris sur les courses de chevaux.",
     "thresholds": { "1": 25 },
     "rewards": { "1": 500 },
-    "order": 13,
     "category": "PMU",
     "tier": "Épique"
   },
-  "pmu_maitre": {
+  "14": {
+    "key": "pmu_maitre",
     "title": "Maître du Turf",
     "desc": "Empocher des gains sur 75 paris hippiques.",
     "thresholds": { "1": 75 },
     "rewards": { "1": 1000 },
-    "order": 14,
     "category": "PMU",
     "tier": "Mythique"
   },
-  "pmu_oracle": {
+  "15": {
+    "key": "pmu_oracle",
     "title": "Oracle des Pistes",
     "desc": "Deviner l'issue de 200 courses victorieuses.",
     "thresholds": { "1": 200 },
     "rewards": { "1": 2500 },
-    "order": 15,
     "category": "PMU",
     "tier": "Légendaire"
   },
-  "crime_premier": {
+  "16": {
+    "key": "crime_premier",
     "title": "Pas de Travers",
     "desc": "Tenter sa chance pour la toute première fois dans la ruelle de John le Brigand.",
     "thresholds": { "1": 1 },
     "rewards": { "1": 100 },
-    "order": 16,
     "category": "Crime",
     "tier": "Commun"
   },
-  "crime_voyou": {
+  "17": {
+    "key": "crime_voyou",
     "title": "Voyou des Rues",
     "desc": "S'aventurer 10 fois dans les sales coups de la ruelle.",
     "thresholds": { "1": 10 },
     "rewards": { "1": 200 },
-    "order": 17,
     "category": "Crime",
     "tier": "Rare"
   },
-  "crime_criminel": {
+  "18": {
+    "key": "crime_criminel",
     "title": "Criminel en Herbe",
     "desc": "Réussir 25 mauvais coups avec John le Brigand.",
     "thresholds": { "1": 25 },
     "rewards": { "1": 500 },
-    "order": 18,
     "category": "Crime",
     "tier": "Épique"
   },
-  "crime_seigneur": {
+  "19": {
+    "key": "crime_seigneur",
     "title": "Seigneur de la pègre",
     "desc": "Compléter 75 méfaits clandestins sans se faire pincer.",
     "thresholds": { "1": 75 },
     "rewards": { "1": 1000 },
-    "order": 19,
     "category": "Crime",
     "tier": "Mythique"
   },
-  "crime_fantome": {
+  "20": {
+    "key": "crime_fantome",
     "title": "Fantôme de la Ruelle",
     "desc": "Accumuler 200 coups fumants réussis dans l'ombre.",
     "thresholds": { "1": 200 },
     "rewards": { "1": 2500 },
-    "order": 20,
     "category": "Crime",
     "tier": "Légendaire"
   },
-  "vault_premier": {
+  "21": {
+    "key": "vault_premier",
     "title": "Tentation du Coffre",
     "desc": "Tenter de deviner la première combinaison du coffre de la Brinks.",
     "thresholds": { "1": 1 },
     "rewards": { "1": 100 },
-    "order": 21,
     "category": "Brinks",
     "tier": "Commun"
   },
-  "vault_apprenti": {
+  "22": {
+    "key": "vault_apprenti",
     "title": "Apprenti Sapeur",
     "desc": "Tenter de crocheter le coffre fort à 10 reprises.",
     "thresholds": { "1": 10 },
     "rewards": { "1": 200 },
-    "order": 22,
     "category": "Brinks",
     "tier": "Rare"
   },
-  "vault_toubib": {
+  "23": {
+    "key": "vault_toubib",
     "title": "Toubib des Portes",
     "desc": "Effectuer 25 tentatives de braquage de la Brinks.",
     "thresholds": { "1": 25 },
     "rewards": { "1": 500 },
-    "order": 23,
     "category": "Brinks",
     "tier": "Épique"
   },
-  "vault_virtuose": {
+  "24": {
+    "key": "vault_virtuose",
     "title": "Virtuose des Codes",
     "desc": "Multiplier les assauts sur le coffre (75 essais).",
     "thresholds": { "1": 75 },
     "rewards": { "1": 1000 },
-    "order": 24,
     "category": "Brinks",
     "tier": "Mythique"
   },
-  "vault_casse": {
+  "25": {
+    "key": "vault_casse",
     "title": "Le Casse du Siècle",
     "desc": "Forcer le destin en atteignant 200 tentatives sur la Brinks.",
     "thresholds": { "1": 200 },
     "rewards": { "1": 2500 },
-    "order": 25,
     "category": "Brinks",
     "tier": "Légendaire"
   },
-  "duel_premier": {
+  "26": {
+    "key": "duel_premier",
     "title": "Entrée en Lice",
     "desc": "Lancer ou accepter un premier duel de Dés ou de PFC face à un autre joueur.",
     "thresholds": { "1": 1 },
     "rewards": { "1": 100 },
-    "order": 26,
     "category": "Duel",
     "tier": "Commun"
   },
-  "duel_bretteur": {
+  "27": {
+    "key": "duel_bretteur",
     "title": "Bretteur de Salon",
     "desc": "Disputer 10 duels face à des membres du serveur.",
     "thresholds": { "1": 10 },
     "rewards": { "1": 200 },
-    "order": 27,
     "category": "Duel",
     "tier": "Rare"
   },
-  "duel_collectionneur": {
+  "28": {
+    "key": "duel_collectionneur",
     "title": "Collectionneur de Trophées",
     "desc": "Remporter 25 duels de Dés ou de PFC.",
     "thresholds": { "1": 25 },
     "rewards": { "1": 500 },
-    "order": 28,
     "category": "Duel",
     "tier": "Épique"
   },
-  "duel_invaincu": {
+  "29": {
+    "key": "duel_invaincu",
     "title": "Invaincu des Salons",
     "desc": "Gagner 75 duels contre d'autres joueurs.",
     "thresholds": { "1": 75 },
     "rewards": { "1": 1000 },
-    "order": 29,
     "category": "Duel",
     "tier": "Mythique"
   },
-  "duel_dieu": {
+  "30": {
+    "key": "duel_dieu",
     "title": "Dieu de l'Arène PvP",
     "desc": "S'imposer au cours de 200 duels mémorables.",
     "thresholds": { "1": 200 },
     "rewards": { "1": 2500 },
-    "order": 30,
     "category": "Duel",
     "tier": "Légendaire"
   },
-  "daily_eveil": {
+  "31": {
+    "key": "daily_eveil",
     "title": "Éveil des Sceaux",
     "desc": "Créer son compte et récupérer ses premiers deniers dans l'économie du serveur.",
     "thresholds": { "1": 1 },
     "rewards": { "1": 100 },
-    "order": 31,
     "category": "Daily",
     "tier": "Commun"
   },
-  "daily_citoyen": {
+  "32": {
+    "key": "daily_citoyen",
     "title": "Citoyen Actif",
     "desc": "Récupérer sa paie ou ses bonus journaliers 10 fois.",
     "thresholds": { "1": 10 },
     "rewards": { "1": 200 },
-    "order": 32,
     "category": "Daily",
     "tier": "Rare"
   },
-  "daily_epargnant": {
+  "33": {
+    "key": "daily_epargnant",
     "title": "Épargnant Régulier",
     "desc": "Percevoir ses revenus périodiques à 50 reprises.",
     "thresholds": { "1": 50 },
     "rewards": { "1": 500 },
-    "order": 33,
     "category": "Daily",
     "tier": "Épique"
   },
-  "daily_pilier": {
+  "34": {
+    "key": "daily_pilier",
     "title": "Pilier de l'Économie",
     "desc": "Accumuler 150 collectes de fonds régulières.",
     "thresholds": { "1": 150 },
     "rewards": { "1": 1000 },
-    "order": 34,
     "category": "Daily",
     "tier": "Mythique"
   },
-  "daily_fondateur": {
+  "35": {
+    "key": "daily_fondateur",
     "title": "Fondateur des Sceaux",
     "desc": "Atteindre 500 récupérations de revenus fructueuses.",
     "thresholds": { "1": 500 },
     "rewards": { "1": 2500 },
-    "order": 35,
     "category": "Daily",
     "tier": "Légendaire"
   },
-  "taverne_tournee": {
+  "36": {
+    "key": "taverne_tournee",
     "title": "Première Tournée",
     "desc": "Commander une pinte fraîche chez Jim le Tavernier.",
     "thresholds": { "1": 1 },
     "rewards": { "1": 100 },
-    "order": 36,
     "category": "Taverne",
     "tier": "Commun"
   },
-  "taverne_regulier": {
+  "37": {
+    "key": "taverne_regulier",
     "title": "Client Régulier",
     "desc": "Boire 10 verres au comptoir de Jim.",
     "thresholds": { "1": 10 },
     "rewards": { "1": 200 },
-    "order": 37,
     "category": "Taverne",
     "tier": "Rare"
   },
-  "taverne_trompe": {
+  "38": {
+    "key": "taverne_trompe",
     "title": "Trompe-la-Soif",
     "desc": "Consommer 30 pintes chez le tavernier.",
     "thresholds": { "1": 30 },
     "rewards": { "1": 500 },
-    "order": 38,
     "category": "Taverne",
     "tier": "Épique"
   },
-  "taverne_tonneau": {
+  "39": {
+    "key": "taverne_tonneau",
     "title": "Tonneau Sur pattes",
     "desc": "Enchaîner 100 commandes de bières bien fraîches.",
     "thresholds": { "1": 100 },
     "rewards": { "1": 1000 },
-    "order": 39,
     "category": "Taverne",
     "tier": "Mythique"
   },
-  "taverne_eponge": {
+  "40": {
+    "key": "taverne_eponge",
     "title": "Éponge Légendaire",
     "desc": "Vider un total de 300 chopes dans la taverne.",
     "thresholds": { "1": 300 },
     "rewards": { "1": 2500 },
-    "order": 40,
     "category": "Taverne",
     "tier": "Légendaire"
   },
-  "bank_premier": {
+  "41": {
+    "key": "bank_premier",
     "title": "Bourse Débutante",
     "desc": "Effectuer son tout premier dépôt de billets à la Banque des IV Sceaux.",
     "thresholds": { "1": 1 },
     "rewards": { "1": 100 },
-    "order": 41,
     "category": "Banque",
     "tier": "Commun"
   },
-  "bank_poire": {
+  "42": {
+    "key": "bank_poire",
     "title": "Petite Poire",
     "desc": "Réaliser 10 opérations de dépôt d'argent.",
     "thresholds": { "1": 10 },
     "rewards": { "1": 200 },
-    "order": 42,
     "category": "Banque",
     "tier": "Rare"
   },
-  "bank_gerant": {
+  "43": {
+    "key": "bank_gerant",
     "title": "Gestionnaire Prudent",
     "desc": "Alimenter son compte bancaire 30 fois.",
     "thresholds": { "1": 30 },
     "rewards": { "1": 500 },
-    "order": 43,
     "category": "Banque",
     "tier": "Épique"
   },
-  "bank_investisseur": {
+  "44": {
+    "key": "bank_investisseur",
     "title": "Investisseur Discret",
     "desc": "Effectuer 100 dépôts sécurisés à la banque.",
     "thresholds": { "1": 100 },
     "rewards": { "1": 1000 },
-    "order": 44,
     "category": "Banque",
     "tier": "Mythique"
   },
-  "bank_magnat": {
+  "45": {
+    "key": "bank_magnat",
     "title": "Magnat des Coffres",
     "desc": "Enregistrer 300 transactions de dépôt réussies.",
     "thresholds": { "1": 300 },
     "rewards": { "1": 2500 },
-    "order": 45,
     "category": "Banque",
     "tier": "Légendaire"
   },
-  "larcin_main": {
+  "46": {
+    "key": "larcin_main",
     "title": "Main leste",
     "desc": "Réussir un tout premier vol ou larcin dans les rues sombres.",
     "thresholds": { "1": 1 },
     "rewards": { "1": 100 },
-    "order": 46,
     "category": "Larcin",
     "tier": "Commun"
   },
-  "larcin_furtif": {
+  "47": {
+    "key": "larcin_furtif",
     "title": "Petite Furtivité",
     "desc": "Conduire 10 larcins discrets sans se faire prendre.",
     "thresholds": { "1": 10 },
     "rewards": { "1": 200 },
-    "order": 47,
     "category": "Larcin",
     "tier": "Rare"
   },
-  "larcin_pickpocket": {
+  "48": {
+    "key": "larcin_pickpocket",
     "title": "Pickpocket Habile",
     "desc": "Fureter et dérober du magot 30 fois.",
     "thresholds": { "1": 30 },
     "rewards": { "1": 500 },
-    "order": 48,
     "category": "Larcin",
     "tier": "Épique"
   },
-  "larcin_ombre": {
+  "49": {
+    "key": "larcin_ombre",
     "title": "Ombre Insaisissable",
     "desc": "Réussir 100 vols audacieux dans la cité.",
     "thresholds": { "1": 100 },
     "rewards": { "1": 1000 },
-    "order": 49,
     "category": "Larcin",
     "tier": "Mythique"
   },
-  "larcin_maitre": {
+  "50": {
+    "key": "larcin_maitre",
     "title": "Maître Cambrioleur",
     "desc": "Compléter un total de 300 larcins légendaires.",
     "thresholds": { "1": 300 },
     "rewards": { "1": 2500 },
-    "order": 50,
     "category": "Larcin",
     "tier": "Légendaire"
   }
