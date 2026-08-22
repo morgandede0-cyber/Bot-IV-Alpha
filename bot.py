@@ -1141,35 +1141,49 @@ def evaluate_stat_for_achievement(ach_key: str, user_id: int) -> int:
         daily_quests = cursor.fetchone()[0] or 0
         total_quests = player_quests + daily_quests
         
-        # === MAPPING STYLE MEE6 ===
-        if ach_key.startswith("quest_") or ach_key.startswith("daily_"):
+        # === MAPPING AVEC LES CLÉS EXACTES DE TON JSON ===
+        
+        # Quêtes (quest_bapteme, quest_habitué, quest_veteran, quest_seigneur, quest_legende)
+        if ach_key.startswith("quest_"):
             return total_quests
         
+        # Arène (arena_essai, arena_assidu, arena_guerrier, arena_champion, arena_terreur)
         if ach_key.startswith("arena_"):
             if "essai" in ach_key or "assidu" in ach_key:
                 return games_played
             return games_won
         
+        # PMU (pmu_premier, pmu_averti, pmu_connaisseur, pmu_maitre, pmu_oracle)
         if ach_key.startswith("pmu_"):
             return games_won
         
+        # Crime (crime_premier, crime_voyou, crime_criminel, crime_seigneur, crime_fantome)
         if ach_key.startswith("crime_"):
             return games_played
         
+        # Brinks (vault_premier, vault_apprenti, vault_toubib, vault_virtuose, vault_casse)
         if ach_key.startswith("vault_"):
             return games_played
         
+        # Duel (duel_premier, duel_bretteur, duel_collectionneur, duel_invaincu, duel_dieu)
         if ach_key.startswith("duel_"):
             if "premier" in ach_key or "bretteur" in ach_key:
                 return games_played
             return games_won
         
+        # Daily (daily_eveil, daily_citoyen, daily_epargnant, daily_pilier, daily_fondateur)
+        if ach_key.startswith("daily_"):
+            return total_quests
+        
+        # Taverne (taverne_tournee, taverne_regulier, taverne_trompe, taverne_tonneau, taverne_eponge)
         if ach_key.startswith("taverne_"):
             return beers_today
         
+        # Banque (bank_premier, bank_poire, bank_gerant, bank_investisseur, bank_magnat)
         if ach_key.startswith("bank_"):
             return games_played
         
+        # Larcin (larcin_main, larcin_furtif, larcin_pickpocket, larcin_ombre, larcin_maitre)
         if ach_key.startswith("larcin_"):
             return games_played
         
@@ -1239,7 +1253,6 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
 # 3.8. COMMANDES D'ACHIEVEMENTS
 # ==========================================
 
-# UNIQUE COMMANDE achievements (supprimer le doublon ailleurs)
 @bot.tree.command(name="achievements", description="Affiche tes succès et trophées")
 async def achievements(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -1335,6 +1348,108 @@ async def force_check(interaction: discord.Interaction, membre: discord.Member =
             color=discord.Color.blue()
         )
     
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="debug-achievement", description="[ADMIN] Debug complet des achievements")
+@app_commands.checks.has_permissions(administrator=True)
+async def debug_achievement(interaction: discord.Interaction, membre: discord.Member = None):
+    await interaction.response.defer(ephemeral=True)
+    
+    target = membre or interaction.user
+    user_id = target.id
+    
+    embed = discord.Embed(
+        title=f"🔍 Debug Achievements - {target.display_name}",
+        color=discord.Color.blue()
+    )
+    
+    # 1. Vérifier le chargement des achievements
+    embed.add_field(
+        name="📊 Chargement",
+        value=f"ACHIEVEMENTS_LOADED: {ACHIEVEMENTS_LOADED}\nNombre: {len(ACHIEVEMENTS_DEFS)}",
+        inline=False
+    )
+    
+    # 2. Afficher les premiers achievements chargés
+    if ACHIEVEMENTS_DEFS:
+        first_achs = list(ACHIEVEMENTS_DEFS.items())[:5]
+        achs_str = "\n".join([f"`{k}`: {v.get('title', '?')}" for k, v in first_achs])
+        embed.add_field(
+            name="📋 5 premiers achievements",
+            value=achs_str,
+            inline=False
+        )
+    
+    # 3. Stats du joueur
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT games_played, games_won, beers_today FROM users WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        
+        if row:
+            embed.add_field(
+                name="📊 Stats utilisateur",
+                value=f"games_played: {row[0]}\ngames_won: {row[1]}\nbeers_today: {row[2]}",
+                inline=False
+            )
+        
+        # 4. Quêtes réclamées
+        cursor.execute("SELECT COUNT(*) FROM player_quests WHERE user_id = ? AND claimed = 1", (user_id,))
+        player_quests = cursor.fetchone()[0] or 0
+        cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
+        daily_quests = cursor.fetchone()[0] or 0
+        embed.add_field(
+            name="📋 Quêtes réclamées",
+            value=f"player_quests: {player_quests}\ndaily_quests: {daily_quests}\nTotal: {player_quests + daily_quests}",
+            inline=False
+        )
+    
+    # 5. Achievements déjà débloqués
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT achievement_key FROM user_achievements WHERE user_id = ?", (user_id,))
+        unlocked = cursor.fetchall()
+        
+        if unlocked:
+            embed.add_field(
+                name="🏆 Débloqués",
+                value="\n".join([f"✅ {row[0]}" for row in unlocked[:10]]),
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="🏆 Débloqués",
+                value="❌ Aucun",
+                inline=False
+            )
+    
+    # 6. Tester un achievement spécifique
+    if ACHIEVEMENTS_DEFS:
+        test_key = list(ACHIEVEMENTS_DEFS.keys())[0]
+        test_data = ACHIEVEMENTS_DEFS[test_key]
+        test_value = evaluate_stat_for_achievement(test_key, user_id)
+        threshold = test_data["thresholds"]["1"]
+        embed.add_field(
+            name="🧪 Test premier achievement",
+            value=f"Clé: `{test_key}`\nTitre: {test_data['title']}\nValeur: {test_value}/{threshold}",
+            inline=False
+        )
+    
+    # 7. Tester un autre achievement (taverne)
+    taverne_keys = [k for k in ACHIEVEMENTS_DEFS.keys() if k.startswith("taverne_")]
+    if taverne_keys:
+        test_key = taverne_keys[0]
+        test_data = ACHIEVEMENTS_DEFS[test_key]
+        test_value = evaluate_stat_for_achievement(test_key, user_id)
+        threshold = test_data["thresholds"]["1"]
+        embed.add_field(
+            name="🧪 Test taverne",
+            value=f"Clé: `{test_key}`\nTitre: {test_data['title']}\nValeur: {test_value}/{threshold}",
+            inline=False
+        )
+    
+    embed.set_footer(text=f"ID: {user_id}")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
