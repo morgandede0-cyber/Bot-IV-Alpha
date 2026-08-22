@@ -4213,7 +4213,8 @@ class BlackjackGame:
     @staticmethod
     def calculate_score(hand):
         score = 0
-        aces = 0        for card in hand:
+        aces = 0
+for card in hand:
             r = card["rank"]
             if r in ["J", "Q", "K"]:
                 score += 10
