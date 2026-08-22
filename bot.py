@@ -1121,7 +1121,6 @@ def evaluate_stat_for_achievement(ach_key: str, user_id: int) -> int:
     with get_db_connection() as conn:
         cursor = conn.cursor()
         
-        # Récupérer les stats du joueur
         cursor.execute("""
             SELECT games_played, games_won, beers_today
             FROM users WHERE user_id = ?
@@ -1136,7 +1135,6 @@ def evaluate_stat_for_achievement(ach_key: str, user_id: int) -> int:
         games_won = games_won or 0
         beers_today = beers_today or 0
         
-        # Compter les quêtes réclamées
         cursor.execute("SELECT COUNT(*) FROM player_quests WHERE user_id = ? AND claimed = 1", (user_id,))
         player_quests = cursor.fetchone()[0] or 0
         cursor.execute("SELECT COUNT(*) FROM daily_quests WHERE user_id = ? AND claimed = 1", (user_id,))
@@ -1191,20 +1189,17 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
     today = time.strftime("%Y-%m-%d")
     unlocked_now = []
     
-    # Récupérer les achievements déjà débloqués
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT achievement_key FROM user_achievements WHERE user_id = ?", (user_id,))
         unlocked_keys = {row[0] for row in cursor.fetchall()}
     
-    # Vérifier chaque achievement
     for ach_id, data in ACHIEVEMENTS_DEFS.items():
         ach_key = data.get("key", ach_id)
         
         if ach_key in unlocked_keys:
             continue
         
-        # Calculer la progression
         progress = evaluate_stat_for_achievement(ach_key, user_id)
         threshold = data["thresholds"]["1"]
         
@@ -1244,6 +1239,7 @@ async def check_and_unlock_achievements(user_id: int, bot_client=None) -> list:
 # 3.8. COMMANDES D'ACHIEVEMENTS
 # ==========================================
 
+# UNIQUE COMMANDE achievements (supprimer le doublon ailleurs)
 @bot.tree.command(name="achievements", description="Affiche tes succès et trophées")
 async def achievements(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -3531,22 +3527,9 @@ async def quetes(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-@bot.tree.command(name="achievements", description="Affiche tes succès et trophées sous forme de carte graphique MEE6")
-async def achievements(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    user_id = interaction.user.id
-
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT achievement_key, tier FROM user_achievements WHERE user_id = ?", (user_id,))
-        unlocked = {row[0]: row[1] for row in cursor.fetchall()}
-
-    img_buf = await generate_mee6_profile_card(interaction.user, unlocked)
-    file = discord.File(fp=img_buf, filename="achievements_profile.png")
-
-    view = AchievementProfileView(interaction.user, unlocked)
-    await interaction.followup.send(file=file, view=view, ephemeral=True)
-
+# ==========================================
+# SUPPRIMER LE DOUBLON - LA COMMANDE achievements EST DÉFINIE UNE SEULE FOIS CI-DESSUS
+# ==========================================
 
 @bot.tree.command(name="work", description="Gagne un peu d'argent en travaillant")
 async def work(interaction: discord.Interaction):
